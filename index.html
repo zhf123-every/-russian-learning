@@ -1,0 +1,2623 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>看视频学俄语</title>
+<style>
+:root{
+  --bg:#f5f7fa; --card:#ffffff; --border:#e6eaf0; --border2:#d6dce5;
+  --text:#1b2330; --muted:#697386; --faint:#9aa3b2;
+  --accent:#0d9488; --accent-dark:#0f766e; --accent-soft:#ccfbf1;
+  --danger:#e11d48; --success:#16a34a; --warn:#d97706;
+  --radius:14px; --shadow:0 1px 2px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  background:var(--bg); color:var(--text); font-size:15px; line-height:1.6;
+}
+.ru{font-family:"PT Serif",Georgia,"Segoe UI",serif;letter-spacing:.2px}
+a{color:var(--accent)}
+button{font-family:inherit;cursor:pointer}
+.hidden{display:none!important}
+
+/* ---------- 顶栏 ---------- */
+.topbar{
+  position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:12px;
+  background:var(--card);border-bottom:1px solid var(--border);
+  padding:10px 20px;
+}
+.brand{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:700}
+.brand .logo{width:28px;height:28px;border-radius:8px;background:var(--accent);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:15px}
+.topbar .spacer{flex:1}
+.topbar select{
+  max-width:220px;padding:7px 10px;border:1px solid var(--border2);border-radius:8px;background:#fff;font-size:14px;
+}
+.tbtn{
+  padding:7px 13px;border:1px solid var(--border2);border-radius:8px;background:#fff;
+  font-size:14px;color:var(--text);white-space:nowrap;
+}
+.tbtn:hover{border-color:var(--accent);color:var(--accent)}
+.tbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.tbtn.primary:hover{background:var(--accent-dark)}
+
+/* ---------- 首页（模式选择） ---------- */
+.home{max-width:1000px;margin:0 auto;padding:48px 24px}
+.home-cards{display:flex;gap:20px;flex-wrap:wrap;justify-content:center}
+.home-card{flex:1;min-width:280px;max-width:440px;background:var(--card);border:1px solid var(--border2);border-radius:16px;padding:34px 28px;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s}
+.home-card:hover{transform:translateY(-4px);box-shadow:0 14px 36px rgba(0,0,0,.10);border-color:var(--accent)}
+.home-card .icon{font-size:44px;margin-bottom:16px}
+.home-card h2{font-size:20px;margin:0 0 6px}
+.home-card .sub{font-size:15px;color:var(--accent);font-weight:600;margin:0 0 10px}
+.home-card p{color:var(--muted);font-size:14px;margin:0;line-height:1.6}
+/* ---------- 课程库 ---------- */
+.course{max-width:820px;margin:0 auto;padding:32px 24px}
+.course h2{font-size:20px;margin:0 0 16px}
+.course-levels{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
+.course-item{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px;cursor:pointer;background:var(--card)}
+.course-item:hover{border-color:var(--accent);background:#f0fdfa}
+.course-item .t{font-size:15px;font-weight:500}
+.course-item .hint{font-size:12px;color:var(--muted)}
+.course-empty{padding:24px;text-align:center;color:var(--muted)}
+
+/* ---------- 布局 ---------- */
+.main{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(340px,1fr);gap:16px;padding:16px 20px;max-width:1500px;margin:0 auto}
+@media(max-width:900px){.main{grid-template-columns:1fr}}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+
+/* 视频 */
+.video-wrap{position:relative;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:16/9}
+.video-wrap iframe,.video-wrap video{position:absolute;inset:0;width:100%;height:100%;border:0;display:block}
+.video-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#94a3b8;gap:8px;font-size:14px}
+
+/* 句子列表 */
+.sent-list{max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:2px}
+.sent{
+  padding:8px 10px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--text);
+  display:flex;gap:8px;align-items:flex-start;border:1px solid transparent;
+}
+.sent:hover{background:#f2f6f7}
+.sent.active{background:var(--accent-soft);border-color:var(--accent);font-weight:600}
+.sent.playing{border-color:#f59e0b;background:#fef9c3}
+.sent .idx{color:var(--faint);font-size:12px;min-width:22px;text-align:right;padding-top:2px}
+.sent .done-flag{color:var(--success)}
+
+/* 学习面板 */
+.stages{display:flex;gap:6px;border:1px solid var(--border2);border-radius:10px;padding:4px;background:#f8fafb}
+.stage{flex:1;padding:8px 0;text-align:center;border-radius:7px;font-size:14px;color:var(--muted);cursor:pointer;border:1px solid transparent}
+.stage:hover{color:var(--text)}
+.stage.active{background:#fff;color:var(--accent);font-weight:600;border-color:var(--border2);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+
+.sentence-box{padding:18px 16px;border:1px dashed var(--border2);border-radius:10px;min-height:120px;
+  display:flex;align-items:center;justify-content:center;position:relative;background:#fbfcfd}
+.sentence-box .txt{font-size:21px;text-align:center;line-height:1.7;word-break:break-word}
+.sentence-box .cover{font-size:15px;color:var(--faint);text-align:center}
+.sentence-box .w{cursor:pointer;border-radius:3px;padding:0 1px;transition:background .12s}
+.sentence-box .w:hover{background:#ffe9c7}
+.sentence-box .cur-sent{background:var(--accent-soft);border-radius:4px;padding:1px 4px}
+
+.translation{margin-top:12px;padding:12px 14px;background:#f0fdfa;border:1px solid #b2f0e3;border-radius:10px;font-size:15px;color:#134e4a}
+.translation .zh-label{font-size:12px;color:var(--muted);margin-bottom:4px}
+
+/* 听写 */
+.dict-area{width:100%;min-height:110px;padding:12px;font-size:19px;border:1px solid var(--border2);
+  border-radius:10px;resize:vertical;font-family:inherit}
+.diff-out{font-size:19px;line-height:1.9;padding:12px;border-radius:10px;background:#fff;border:1px solid var(--border2);word-break:break-word}
+.diff-out .ok{color:var(--success)}
+.diff-out .bad{color:var(--danger);background:#ffe4e6;border-radius:2px;padding:0 1px}
+.score{margin-top:8px;font-size:15px;font-weight:600}
+
+/* 按钮行 */
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.btn{
+  padding:9px 15px;border:1px solid var(--border2);border-radius:9px;background:#fff;font-size:14px;color:var(--text);
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent-dark)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.danger{color:var(--danger);border-color:#fecdd3}
+.btn.sm{padding:6px 10px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+.nav-arrows{display:flex;gap:6px;justify-content:space-between;align-items:center;margin-top:4px}
+.nav-arrows .pos{font-size:13px;color:var(--muted)}
+
+/* 点词弹窗 */
+.word-pop{
+  position:fixed;z-index:60;background:#fff;border:1px solid var(--border2);border-radius:12px;
+  box-shadow:0 12px 40px rgba(16,24,40,.18);padding:12px 14px;max-width:280px;min-width:200px;
+}
+.word-pop .w-head{font-size:18px;font-weight:700}
+.word-pop .w-body{margin-top:6px;font-size:14px;color:var(--text);max-height:140px;overflow-y:auto}
+.word-pop .w-body.loading{color:var(--faint)}
+.word-pop .row{margin-top:10px}
+
+/* 弹窗 */
+.modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto}
+.modal{background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:100%;max-width:620px;padding:22px;animation:pop .16s ease}
+@keyframes pop{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+.modal h2{margin:0 0 6px;font-size:19px}
+.modal .hint{color:var(--muted);font-size:13px;margin:0 0 16px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+.field input,.field textarea,.field select{
+  width:100%;padding:9px 11px;border:1px solid var(--border2);border-radius:9px;font-size:14px;font-family:inherit;
+}
+.field textarea{min-height:90px;resize:vertical}
+.field input:focus,.field textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.mfoot{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+
+/* AI 结果 */
+.ai-out{font-size:14.5px;line-height:1.75;white-space:normal}
+.ai-out h1,.ai-out h2,.ai-out h3,.ai-out h4{margin:14px 0 6px;font-size:15px}
+.ai-out p{margin:6px 0}
+.ai-out ul,.ai-out ol{margin:6px 0;padding-left:22px}
+.ai-out code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:13px}
+.ai-out pre{background:#f1f5f9;padding:10px;border-radius:8px;overflow-x:auto}
+.ai-out strong{color:#0f766e}
+.ai-loading{color:var(--muted);font-style:italic}
+
+/* 生词本 / 复习 */
+.srs-card{text-align:center;padding:26px 18px}
+.srs-card .q{font-size:26px;margin:10px 0}
+.srs-card .q .w{font-size:28px;font-weight:700}
+.srs-card .a{font-size:16px;color:var(--muted);margin-bottom:18px}
+.srs-grades{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.grade{min-width:84px;padding:10px 12px;border-radius:10px;border:1px solid var(--border2);background:#fff;font-size:14px}
+.grade:hover{border-color:var(--accent)}
+.grade.g1{color:var(--danger)} .grade.g2{color:var(--warn)} .grade.g3{color:var(--accent)} .grade.g4{color:var(--success)}
+.srs-stats{font-size:13px;color:var(--muted);text-align:center;margin-top:12px}
+
+/* 空状态 */
+.empty{max-width:560px;margin:60px auto;text-align:center;padding:30px}
+.empty .big{font-size:44px;margin-bottom:12px}
+.empty h1{font-size:22px;margin:0 0 10px}
+.empty p{color:var(--muted);margin:6px 0}
+.empty .cta{margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+
+/* 小提示 */
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1b2330;color:#fff;
+  padding:10px 18px;border-radius:10px;font-size:14px;z-index:80;box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+
+/* ---------- 词典 / 语法 ---------- */
+.gtable{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0 16px}
+.gtable th,.gtable td{border:1px solid var(--border2);padding:6px 10px;text-align:left;vertical-align:top}
+.gtable th{background:#f2f6f7;font-weight:600;white-space:nowrap}
+.gtable td:first-child{color:var(--muted);font-size:13px;white-space:nowrap}
+.gitem{margin-bottom:6px}
+.glabel{font-weight:600;color:var(--accent-dark);margin-bottom:4px;font-size:14px}
+.gintro{color:var(--muted);font-size:14px;margin-bottom:10px;line-height:1.7}
+.gtext{font-size:14px;line-height:1.9;margin:6px 0}
+.gnav-item{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--text);margin-bottom:2px;white-space:nowrap}
+.gnav-item:hover{background:#f2f6f7}
+.gnav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.dentry{border:1px solid var(--border2);border-radius:10px;padding:14px 16px}
+.dword{font-size:22px;font-weight:700}
+.dpos{display:inline-block;background:var(--accent-soft);color:var(--accent-dark);font-size:12px;padding:1px 8px;border-radius:6px;margin-left:8px;vertical-align:middle}
+.dz{font-size:16px;margin-top:8px}
+.dlemma{font-size:13px;color:var(--muted);margin-top:4px}
+.den{font-size:14px;color:var(--muted);margin-top:4px}
+.dstress{color:var(--faint);font-size:16px;font-weight:400}
+@media(max-width:640px){.grammar-layout{flex-direction:column}#grammarNav{width:100%!important;display:flex;flex-wrap:wrap;gap:4px}.gnav-item{border:1px solid var(--border2);padding:5px 8px}}
+
+/* ---------- AI 学习教练 ---------- */
+.seg-sent-list{
+  max-height:220px;overflow-y:auto;
+  border:1px solid var(--border2);border-radius:10px;
+  display:flex;flex-direction:column;gap:1px;
+  background:var(--border2);margin-top:6px;
+}
+.seg-sent{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:7px 12px;background:#fff;cursor:pointer;
+  font-size:15px;line-height:1.5;min-height:38px;
+  transition:background .1s;
+}
+.seg-sent:hover{background:#f2f6f7}
+.seg-sent.active{background:var(--accent-soft, #e8f4f8);border-left:3px solid var(--accent,#2d7d9a)}
+.seg-sent .idx{color:var(--faint,#999);font-size:12px;min-width:22px;text-align:right;padding-top:2px;flex-shrink:0}
+.seg-sent .ru{color:var(--text,#333);word-break:break-word}
+.seg-sent .done-flag{color:var(--success,#4caf50);margin-left:auto;padding-top:2px;flex-shrink:0}
+.seg-sent .tr-hint{font-size:11px;color:#5a4632;margin-top:2px}
+.qopts{display:flex;flex-direction:column;gap:6px}
+.qopt{display:flex;align-items:flex-start;gap:8px;font-size:14px;cursor:pointer;padding:6px 8px;border-radius:7px}
+.qopt:hover{background:#f2f6f7}
+.qopt input{margin-top:3px}
+.qfill{width:100%;padding:9px 11px;border:1px solid var(--border2);border-radius:8px;font-size:15px;font-family:inherit}
+.level-badge{color:#fff;font-weight:700;font-size:14px;padding:4px 14px;border-radius:20px}
+.score-big{font-size:22px;font-weight:700}
+.rep-sec{margin-top:10px;font-size:14px;line-height:1.8}
+.rep-sec b{color:var(--accent-dark)}
+.rep-ul{margin:4px 0 0;padding-left:20px}
+.chip{display:inline-block;background:var(--accent-soft);color:var(--accent-dark);border-radius:6px;padding:1px 8px;margin:2px 4px 2px 0;font-size:13px}
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<div class="topbar">
+  <div class="brand"><span class="logo">🎬</span><span>看视频学俄语</span></div>
+  <button class="tbtn hidden" id="btnHome" onclick="goHome()">🏠 首页</button>
+  <select id="matSelect" class="hidden" onchange="onSelectMaterial(this.value)"></select>
+  <button id="nextMatBtn" class="tbtn hidden" onclick="goNextMaterial()">下一篇 →</button>
+  <div class="spacer"></div>
+  <button class="tbtn" onclick="openImport()">＋ 导入材料</button>
+  <button class="tbtn" onclick="openTranscribe()">🎙 音频识别</button>
+  <button class="tbtn" onclick="openDict()">📖 词典</button>
+  <button class="tbtn" onclick="openGrammar()">📚 语法</button>
+  <button class="tbtn" onclick="openSRS()">生词本</button>
+  <button class="tbtn" onclick="openSettings()">设置</button>
+</div>
+
+<!-- 首页：模式选择 -->
+<div id="view-home" class="home">
+  <div class="home-cards">
+    <div class="home-card" onclick="openImport()">
+      <div class="icon">📎</div>
+      <h2>自定义素材</h2>
+      <div class="sub">粘贴链接 / 上传视频</div>
+      <p>导入任意视频链接或本地文件，自由做影子跟读、听写、听力练习。</p>
+    </div>
+    <div class="home-card" onclick="openCourse()">
+      <div class="icon">📚</div>
+      <h2>分级课程库</h2>
+      <div class="sub">A1 – B2 现成俄语视频库</div>
+      <p>内置分级教学视频，直接选级别开始练习，无需自己找素材。</p>
+    </div>
+  </div>
+</div>
+
+<!-- 课程库：分级选课 -->
+<div id="view-course" class="course hidden">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+    <h2 style="margin:0">📚 分级课程库</h2>
+    <span class="hint" style="margin:0">选级别 → 下载视频 → 进入学习</span>
+    <div style="flex:1"></div>
+    <button class="btn sm" onclick="resetCourseLevel()">🔄 重置本等级</button>
+  </div>
+  <div class="course-levels" id="courseLevels"></div>
+  <div id="courseVideos"></div>
+</div>
+
+<!-- 主界面 -->
+<div id="view-study" class="main hidden">
+  <div class="col">
+    <div class="card" style="padding:10px">
+      <div class="video-wrap" id="videoWrap">
+        <div class="video-placeholder">导入材料后显示视频</div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="font-weight:600;margin-bottom:6px">台词列表 <span id="sentCount" style="color:var(--muted);font-weight:400;font-size:13px"></span></div>
+      <div class="sent-list" id="sentList"></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <div class="stages" id="stages">
+        <div class="stage active" data-s="listen" onclick="setStage('listen')">👂 听</div>
+        <div class="stage" data-s="dictate" onclick="setStage('dictate')">⌨️ 听写</div>
+        <div class="stage" data-s="recite" onclick="setStage('recite')">🎤 跟读</div>
+      </div>
+
+      <div class="sentence-box" id="sentenceBox" style="margin-top:12px"></div>
+      <div class="translation hidden" id="translationBox"></div>
+
+      <div id="stagePanel" style="margin-top:12px"></div>
+
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="btnReplay" onclick="replay()">▶ 播放本句</button>
+        <button class="btn sm" id="btnReveal" onclick="toggleReveal()">显示原文</button>
+        <button class="btn sm" onclick="toggleTranslation()">中译</button>
+        <button class="btn sm" onclick="aiExplain()">🤖 AI 解析</button>
+      </div>
+
+      <div class="nav-arrows">
+        <button class="btn sm" onclick="goSentence(-1)">← 上一句</button>
+        <span class="pos" id="posLabel"></span>
+        <button class="btn sm" onclick="goSentence(1)">下一句 →</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="courseSubmitCard" style="grid-column:1/-1;display:none">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="flex:1">
+        <div style="font-weight:600">📚 课程视频</div>
+        <div class="hint" style="margin:0">完成本视频的听写/跟读练习后，提交评测计算得分（练过的句子越多越准）</div>
+      </div>
+      <button class="btn primary" onclick="submitCourseVideo()">✅ 提交评测（完成本视频）</button>
+    </div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:20px">🤖</span><h3 style="margin:0">AI 学习教练</h3><span class="hint" style="margin:0">学完一篇，做一次检测，科学推进</span></div>
+    <div id="coachBody"></div>
+  </div>
+</div>
+
+<!-- 导入材料弹窗 -->
+<div id="modal-import" class="modal-mask hidden">
+  <div class="modal">
+    <h2>导入材料</h2>
+    <p class="hint">一个「材料」= 视频 + 字幕。字幕会拆成一句句台词，供你逐句学习。<br>📌 点击「保存并开始学习」时，会先在本地完成断句：带时间戳（SRT/VTT）且已设置 API Key 的，会用 AI 智能断句并弹出预览窗口供你确认；无 API Key 或断句失败时，会自动用规则断句（按 cue 边界 + 标点切分）后直接保存，无需再手动处理。</p>
+    <div class="field">
+      <label>① 视频来源</label>
+      <select id="impType" onchange="toggleImpType()">
+        <option value="youtube">YouTube 链接</option>
+        <option value="local">本地视频文件</option>
+      </select>
+    </div>
+    <div class="field" id="impUrlField">
+      <label>YouTube 链接</label>
+      <input id="impUrl" placeholder="https://www.youtube.com/watch?v=...">
+      <div class="hint" style="margin-top:4px">贴链接后点「自动抓字幕」即可（会下载俄语字幕，含自动生成字幕）。</div>
+    </div>
+    <div class="field hidden" id="impFileField">
+      <label>本地视频文件（保存在本机浏览器内，可跨会话）</label>
+      <input id="impFile" type="file" accept="video/*">
+    </div>
+    <div class="field">
+      <label>② 字幕（SRT / VTT / 纯文本）</label>
+      <textarea id="impSubs" placeholder="粘贴 SRT/VTT 字幕，或纯俄语文本。&#10;&#10;SRT 例子：&#10;1&#10;00:00:01,000 --> 00:00:04,000&#10;Привет, как дела?"></textarea>
+      <div class="row" style="margin-top:6px">
+        <button class="btn sm" id="btnFetchSubs" onclick="fetchSubs()">⚡ 自动抓字幕</button>
+        <button class="btn sm" onclick="loadDemo()">用示例数据试试</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>标题（可选）</label>
+      <input id="impTitle" placeholder="例如：俄语日常对话第 1 集">
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-import')">取消</button>
+      <button class="btn primary" onclick="saveMaterial()">保存并开始学习</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置弹窗 -->
+<div id="modal-settings" class="modal-mask hidden">
+  <div class="modal">
+    <h2>设置</h2>
+    <p class="hint">「AI 解析」需要一个你自己的 LLM Key（OpenAI 兼容接口，DeepSeek / 通义 / 智谱等均可）。不填也能用其它功能。</p>
+    <div class="field">
+      <label>接口地址 baseUrl</label>
+      <input id="setBase" placeholder="https://api.deepseek.com">
+    </div>
+    <div class="field">
+      <label>API Key</label>
+      <input id="setKey" type="password" placeholder="sk-...">
+    </div>
+    <div class="field">
+      <label>模型名</label>
+      <input id="setModel" placeholder="deepseek-chat">
+    </div>
+    <div class="field">
+      <label>Whisper 转写模型（「从音频识别字幕」用，纯本地无需 key）</label>
+      <select id="setWhisper">
+        <option value="tiny">tiny —— 最快，错字较多</option>
+        <option value="base">base —— 快，一般</option>
+        <option value="small" selected>small —— 推荐，质量/速度平衡</option>
+        <option value="medium">medium —— 更准，慢、占内存多</option>
+      </select>
+    </div>
+    <div class="field" style="border-top:1px solid var(--border);padding-top:12px;display:flex;gap:8px">
+      <button class="btn sm" onclick="exportData()">导出备份</button>
+      <button class="btn sm" onclick="document.getElementById('impBackup').click()">导入备份</button>
+      <input type="file" id="impBackup" accept=".json" class="hidden" onchange="importData(this)">
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-settings')">取消</button>
+      <button class="btn primary" onclick="saveSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 生词本 / 复习弹窗 -->
+<div id="modal-srs" class="modal-mask hidden">
+  <div class="modal">
+    <h2 id="srsTitle">生词本</h2>
+    <div id="srsBody"></div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-srs')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- AI 解析弹窗 -->
+<div id="modal-ai" class="modal-mask hidden">
+  <div class="modal">
+    <h2>🤖 AI 老师</h2>
+    <div class="ai-out" id="aiBody"><div class="ai-loading">正在解析…</div></div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-ai')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 词典弹窗 -->
+<div id="modal-dict" class="modal-mask hidden">
+  <div class="modal" style="max-width:680px">
+    <h2>📖 俄语词典</h2>
+    <p class="hint">内置高频词库（俄→中），可识别常见变格/变位形式；未收录的词自动联网查询。</p>
+    <div class="row" style="margin-bottom:12px">
+      <input id="dictQuery" style="flex:1;padding:10px 12px;border:1px solid var(--border2);border-radius:9px;font-size:16px" placeholder="输入俄语单词，如 стол / делаю / книги" onkeydown="if(event.key==='Enter')dictSearch()">
+      <button class="btn primary" onclick="dictSearch()">查询</button>
+    </div>
+    <div id="dictResult"></div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-dict')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 语法弹窗 -->
+<div id="modal-grammar" class="modal-mask hidden">
+  <div class="modal" style="max-width:880px">
+    <h2>📚 俄语语法工具书</h2>
+    <input id="grammarSearchInput" style="width:100%;padding:9px 12px;border:1px solid var(--border2);border-radius:9px;font-size:14px;margin-top:6px" placeholder="🔍 搜索语法点，如：变格 / 动词体 / 介词 / 命令式…" oninput="grammarSearch(this.value)">
+    <div class="grammar-layout" style="display:flex;gap:16px;margin-top:12px">
+      <div id="grammarNav" style="width:170px;flex-shrink:0"></div>
+      <div id="grammarBody" style="flex:1;min-width:0;max-height:66vh;overflow:auto"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-grammar')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- AI 断句预览/修正弹窗 -->
+<div id="modal-seg-preview" class="modal-mask hidden">
+  <div class="modal" style="max-width:700px">
+    <h2>🤖 AI 断句预览</h2>
+    <div class="field">
+      <label>📋 主台词列表（点击行展开详细分析）</label>
+      <div id="segSentList" class="seg-sent-list"></div>
+    </div>
+    <div class="field">
+      <label>🔍 句子详细分析（选中的句子）</label>
+      <div id="segPreviewList" style="max-height:320px;overflow-y:auto;margin-top:8px"></div>
+    </div>
+    <div class="field">
+      <label>💬 您的修改意见（可选）</label>
+      <textarea id="segFeedback" placeholder="例如：第 3 句和第 4 句应该合并；第 7 句在 "идти" 后应该切分…" rows="3"></textarea>
+      <div class="hint" style="margin-top:4px">您可以指出具体哪里断错了、哪些词应该重新组合，AI 将根据您的说明重新生成。</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-seg-preview')">取消</button>
+      <button class="btn primary" onclick="applyAISegmentation()">接受并应用</button>
+      <button class="btn" onclick="regenerateWithFeedback()">重新生成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 音频识别（转写）弹窗 -->
+<div id="modal-transcribe" class="modal-mask hidden">
+  <div class="modal" style="max-width:700px">
+    <h2>🎙 从音频识别字幕</h2>
+    <p class="hint">粘贴视频链接 → 自动下载音频并识别成一句句带时间戳的俄语台词。无需字幕、无需 key。</p>
+    <div class="field">
+      <label>① 视频链接（YouTube）</label>
+      <input id="tcUrl" placeholder="https://www.youtube.com/watch?v=...">
+    </div>
+    <div class="field">
+      <label>② 标题（可选）</label>
+      <input id="tcTitle" placeholder="例如：俄语日常对话第 1 集">
+    </div>
+    <div class="field">
+      <button class="btn primary" id="btnTcStart" onclick="startTranscribe()">🎙 开始识别</button>
+      <span class="hint" id="tcStatus" style="margin-left:8px"></span>
+    </div>
+    <div class="field hidden" id="tcPreviewField">
+      <label>识别结果（确认后保存）</label>
+      <div id="transcribeSentList" class="sent-list"></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" onclick="closeModal('modal-transcribe')">取消</button>
+      <button class="btn primary hidden" id="btnTcSave" onclick="saveTranscribed()">✅ 保存并开始学习</button>
+    </div>
+  </div>
+</div>
+
+<script src="dict-data.js"></script>
+<script src="dict-full.js"></script>
+<script src="grammar-data.js"></script>
+<script>
+/* =====================================================================
+   状态管理
+===================================================================== */
+const LS = {
+  materials:'rulearn_materials', settings:'rulearn_settings', srs:'rulearn_srs',
+  dict:'rulearn_dict', session:'rulearn_session', course:'rulearn_course'
+};
+function loadLS(key, def){ try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; }catch(e){ return def; } }
+function saveLS(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+
+let state = {
+  materials: loadLS(LS.materials, []),
+  settings: Object.assign({baseUrl:'https://api.deepseek.com', key:'', model:'deepseek-chat'}, loadLS(LS.settings, {})),
+  srs: loadLS(LS.srs, []),
+  dict: loadLS(LS.dict, {}),
+  session: loadLS(LS.session, {materialId:null, index:0, stage:'listen'}),
+  course: loadLS(LS.course, {}),
+};
+let current = null;   // 当前材料
+let segs = [];        // 当前材料的句子数组
+let curIdx = 0;       // 当前句子下标
+let playingIdx = -1;  // 正在播放的句子下标（随视频/音频进度同步，用于字幕高亮）
+let curStage = 'listen';
+let revealed = false; // 是否已显示原文
+let recognition = null;
+let courseSentenceScores = [];  // 当前课程视频逐句得分（提交评测时算视频得分）
+const ytPoll = setInterval(ytTick, 300);
+
+/* 分级课程库：内置 A1-B2 俄语教学视频清单（多平台，均为真实视频）
+   每条视频：{ title, platform: 'youtube'|'bilibili'|其它, url }
+   - 不需要手动填句子时间戳：程序「下载」时会自动抓字幕或 Whisper 转写生成
+   - platform 默认 youtube（iframe 完整控制）；bilibili 等走后端流式代理
+   - 数组内按难度升序排列，顺序学习、逐级解锁 */
+const levelVideos = {
+  A1: [
+    { title: "Super Slow Russian | How I Spend My Usual Day (A1)", platform: "youtube", url: "https://www.youtube.com/watch?v=kVZdzJR2tR4" },
+    { title: "Funny Russian Story for A1 — Grandma & Her Clever Cat", platform: "youtube", url: "https://www.youtube.com/watch?v=sF20z8jY1yU" },
+    { title: "Your First 25 Russian Phrases (Absolute Beginner)", platform: "youtube", url: "https://www.youtube.com/watch?v=QhhI0dyqbpE" },
+    { title: "俄语广播秀 Russian Radio Show（A1-C1 双语字幕）", platform: "bilibili", url: "https://www.bilibili.com/video/BV1WFPBzrELv" }
+  ],
+  A2: [
+    { title: "A1-A2 Simple Story — Russian Podcast", platform: "youtube", url: "https://www.youtube.com/watch?v=_L5cFo3ij6s" },
+    { title: "What I Eat Every Day — Slow Russian Podcast", platform: "youtube", url: "https://www.youtube.com/watch?v=grzkvA6OQiE" },
+    { title: "A Conversation with a Russian Language Learner", platform: "youtube", url: "https://www.youtube.com/watch?v=ZZF7g6aj0Zc" },
+    { title: "俄语全套教程（0基础起步，多集）", platform: "bilibili", url: "https://www.bilibili.com/video/BV1KumnB9Eok" }
+  ],
+  B1: [
+    { title: "Life Story of Fyodor Dostoevsky — Intermediate (B1)", platform: "youtube", url: "https://www.youtube.com/watch?v=fyc5AxfYBrE" },
+    { title: "14 Minutes of Intermediate Russian Conversation", platform: "youtube", url: "https://www.youtube.com/watch?v=7FnU9pK5wow" },
+    { title: "Why Am I Vegan? — Slow Russian (B1)", platform: "youtube", url: "https://www.youtube.com/watch?v=Dj8J9MnPTFo" },
+    { title: "Maria's Russian Journey — Inspiring Story (B1)", platform: "youtube", url: "https://www.youtube.com/watch?v=31h-qXJimXc" }
+  ],
+  B2: [
+    { title: "Real Spontaneous Fast Russian Conversation (Subtitles)", platform: "youtube", url: "https://www.youtube.com/watch?v=iPCCcBAVpC8" },
+    { title: "Life in Moscow — Interview with Vlad (B2-C1)", platform: "youtube", url: "https://www.youtube.com/watch?v=JGc5ZxpHy1I" },
+    { title: "The Most Challenging Russian Listening (B2+)", platform: "youtube", url: "https://www.youtube.com/watch?v=YJViXHExkbY" },
+    { title: "Real Spoken Russian (B1-B2 Listening Practice)", platform: "youtube", url: "https://www.youtube.com/watch?v=TaYoljSNMa8" }
+  ]
+};
+let courseLevel = 'A1';
+let courseVideos = [];
+
+/* =====================================================================
+   视图切换（首页 / 课程库 / 学习）
+===================================================================== */
+function showView(name){
+  document.getElementById('view-home').classList.toggle('hidden', name!=='home');
+  document.getElementById('view-course').classList.toggle('hidden', name!=='course');
+  document.getElementById('view-study').classList.toggle('hidden', name!=='study');
+  document.getElementById('btnHome').classList.toggle('hidden', name==='home');
+  const inStudy = name==='study';
+  const hasCustom = state.materials.length>0;
+  document.getElementById('matSelect').classList.toggle('hidden', !(inStudy && hasCustom));
+  document.getElementById('nextMatBtn').classList.toggle('hidden', !(inStudy && hasCustom));
+}
+function goHome(){
+  // 回到首页：清空视频、录音、识别状态，重置所有组件
+  if(loopReciting) stopLoopRecite();
+  if(recognition){ try{ recognition.stop(); }catch(e){} }
+  recognition=null; loopReciting=false;
+  clearPlayer();
+  current=null; segs=[]; curIdx=0; playingIdx=-1; revealed=false; courseSentenceScores=[];
+  showView('home');
+}
+const LEVEL_ORDER = ['A1','A2','B1','B2'];
+const LEVEL_PASS = 60;  // 上一级掌握度达到该值才解锁下一级
+
+/* 课程进度：state.course[level] = 每个视频的进度数组 */
+function ensureCourseLevel(level){
+  const vids = levelVideos[level] || [];
+  if(!state.course[level]) state.course[level] = [];
+  while(state.course[level].length < vids.length){
+    state.course[level].push({downloaded:false, downloading:false, sentences:null, done:false, score:null, error:null});
+  }
+  return state.course[level];
+}
+function getVideoProg(level, i){
+  const prog = ensureCourseLevel(level);
+  return prog[i] || {downloaded:false, downloading:false, sentences:null, done:false, score:null, error:null};
+}
+function saveCourse(){ saveLS(LS.course, state.course); }
+
+function calcMastery(level){
+  const vids = levelVideos[level] || [];
+  if(!vids.length) return 0;
+  const prog = state.course[level] || [];
+  let sum = 0;
+  for(let i=0;i<vids.length;i++){
+    const p = prog[i];
+    if(p && p.done && p.score != null) sum += p.score;
+  }
+  return Math.min(99, Math.round(sum / (vids.length * 100) * 99));
+}
+function isLevelUnlocked(level){
+  const idx = LEVEL_ORDER.indexOf(level);
+  if(idx <= 0) return true;
+  return calcMastery(LEVEL_ORDER[idx-1]) >= LEVEL_PASS;
+}
+function isVideoUnlocked(level, i){
+  if(!isLevelUnlocked(level)) return false;
+  if(i === 0) return true;
+  const prog = state.course[level] || [];
+  return !!(prog[i-1] && prog[i-1].done);
+}
+
+function openCourse(){
+  courseLevel='A1';
+  renderCourseLevels();
+  renderCourseVideos();
+  showView('course');
+}
+function renderCourseLevels(){
+  const el=document.getElementById('courseLevels');
+  el.innerHTML = LEVEL_ORDER.map(l=>{
+    const unlocked = isLevelUnlocked(l);
+    const m = calcMastery(l);
+    return '<button class="btn sm'+(l===courseLevel?' primary':'')+'" '
+      +(unlocked?'':'disabled style="opacity:.5"')
+      +' onclick="selectCourseLevel(\''+l+'\')">'+l
+      +(unlocked?' · 掌握 '+m+'%':' 🔒')+'</button>';
+  }).join('');
+}
+function selectCourseLevel(l){
+  if(!isLevelUnlocked(l)){ toast('该等级尚未解锁'); return; }
+  courseLevel=l;
+  renderCourseLevels();
+  renderCourseVideos();
+}
+function renderCourseVideos(){
+  const el=document.getElementById('courseVideos');
+  courseVideos = levelVideos[courseLevel]||[];
+  if(!courseVideos.length){
+    el.innerHTML='<div class="course-empty">该级别暂无视频（在 levelVideos 里填充数据后即可显示）</div>';
+    return;
+  }
+  el.innerHTML = courseVideos.map((v,i)=>{
+    const p = getVideoProg(courseLevel, i);
+    const unlocked = isVideoUnlocked(courseLevel, i);
+    let status='', click='', btn='';
+    if(!unlocked){
+      status='<span class="hint">🔒 未解锁</span>';
+    } else if(p.done){
+      status='<span class="hint">✅ 已完成 · '+(p.score!=null?p.score+'分':'')+'</span>';
+      click='onclick="startCourseVideo('+i+')"';
+      btn='<button class="btn sm" onclick="event.stopPropagation();resetCourseVideo('+i+')">重学</button>';
+    } else if(p.downloading){
+      status='<span class="hint">⏳ 下载中…</span>';
+    } else if(p.error){
+      status='<span class="hint" style="color:var(--danger)">下载失败</span>';
+      btn='<button class="btn sm" onclick="event.stopPropagation();downloadCourseVideo('+i+')">重试</button>';
+    } else if(!p.downloaded){
+      status='<span class="hint">待下载</span>';
+      btn='<button class="btn sm" onclick="event.stopPropagation();downloadCourseVideo('+i+')">⬇ 下载</button>';
+    } else {
+      status='<span class="hint">📖 待学习</span>';
+      click='onclick="startCourseVideo('+i+')"';
+    }
+    return '<div class="course-item" '+click+'>'
+      +'<span class="t">'+(i+1)+'. '+v.title.replace(/</g,'&lt;')+'</span>'
+      +'<span style="display:flex;align-items:center;gap:8px">'+status+btn+'</span>'
+      +'</div>';
+  }).join('');
+}
+
+/* 下载：抓字幕/时间戳 + 缓存 */
+async function downloadCourseVideo(i){
+  const v = levelVideos[courseLevel][i];
+  if(!v) return;
+  const p = ensureCourseLevel(courseLevel)[i];
+  if(p.downloaded || p.downloading) return;
+  p.downloading = true; p.error = null;
+  saveCourse(); renderCourseVideos();
+  try{
+    const sentences = await downloadVideoSentences(v.url);
+    p.downloaded = true; p.downloading = false; p.sentences = sentences;
+  }catch(e){
+    p.downloading = false; p.error = (e && e.message) || '下载失败';
+  }
+  saveCourse(); renderCourseVideos();
+}
+async function downloadVideoSentences(url){
+  // 先试字幕（快），再回退到 Whisper 转写
+  try{
+    const r = await fetch('/api/subs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url})});
+    const j = await r.json();
+    if(j.ok && j.text){
+      const cues = parseSubtitles(j.text);
+      const sentences = cues.length ? cuesToSentences(cues) : plainToSentences(j.text);
+      if(sentences && sentences.length) return sentences;
+    }
+  }catch(e){}
+  const r2 = await fetch('/api/transcribe', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url, model: state.settings.whisperModel||'small'})});
+  const j2 = await r2.json();
+  if(j2.ok && j2.segments && j2.segments.length) return j2.segments;
+  throw new Error(j2.error || '下载失败');
+}
+
+/* 开始学习（用缓存的句子） */
+function startCourseVideo(i){
+  const p = getVideoProg(courseLevel, i);
+  if(!p.downloaded){ toast('请先下载该视频'); return; }
+  const v = levelVideos[courseLevel][i];
+  const m = { id:'c'+Date.now().toString(36), title:v.title,
+    videoBlobId:null, raw:'', sentences:p.sentences||[], hasTimestamps:true, createdAt:Date.now(),
+    courseLevel, courseIndex:i };
+  if(v.platform==='youtube' || !v.platform){
+    const id = extractYtId(v.url);
+    if(!id){ toast('课程视频链接无效：'+(v.title||'')); return; }
+    m.type='youtube'; m.youtubeId=id;
+  } else {
+    m.type='stream'; m.streamUrl=v.url;
+  }
+  courseSentenceScores = [];
+  mountMaterial(m, false);
+}
+
+/* 逐句得分记录（听写/跟读时调用） */
+function recordCourseScore(i, acc){
+  if(current && current.courseLevel != null){
+    courseSentenceScores[i] = acc;
+  }
+}
+
+/* 提交评测：算视频得分，更新掌握度 */
+function submitCourseVideo(){
+  if(!current || current.courseLevel == null){ return; }
+  const level = current.courseLevel, i = current.courseIndex;
+  const p = ensureCourseLevel(level)[i];
+  const n = segs.length;
+  if(!n){ toast('本视频没有句子'); return; }
+  let sum = 0, cnt = 0;
+  for(let k=0;k<n;k++){ if(courseSentenceScores[k] != null){ sum += courseSentenceScores[k]; cnt++; } }
+  const score = cnt ? Math.round(sum / cnt) : 0;  // 练过的句子平均分
+  p.done = true; p.score = score;
+  saveCourse();
+  toast('本视频得分 '+score+' 分 · '+level+' 掌握度 '+calcMastery(level)+'%');
+  renderCourseLevels(); renderCourseVideos();
+}
+
+/* 重置：清空等级进度 / 单个视频进度 */
+function resetCourseLevel(){
+  state.course[courseLevel] = [];
+  saveCourse();
+  renderCourseLevels(); renderCourseVideos();
+  toast(courseLevel+' 已重置，可重新开始');
+}
+function resetCourseVideo(i){
+  const p = ensureCourseLevel(courseLevel)[i];
+  p.done = false; p.score = null;
+  saveCourse(); renderCourseVideos();
+  toast('已重置该视频进度');
+}
+
+function persist(){ saveLS(LS.materials, state.materials); saveLS(LS.srs, state.srs); saveLS(LS.dict, state.dict); }
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'), 2200); }
+
+/* =====================================================================
+   视频播放器
+===================================================================== */
+const player = {
+  mode:null, yt:null, video:null, segStart:0, segEnd:0, loop:false, loopContinuous:false, ready:false,
+};
+function ytTick(){
+  syncHighlight();
+  if(player.mode!=='youtube' || !player.yt || !player.loop) return;
+  try{
+    if(player.yt.getPlayerState()===1 && player.yt.getCurrentTime() >= player.segEnd){
+      if(player.loopContinuous){ player.yt.seekTo(player.segStart, true); }
+      else { player.yt.pauseVideo(); player.loop=false; }
+    }
+  }catch(e){}
+}
+
+function clearPlayer(){
+  const wrap = document.getElementById('videoWrap');
+  wrap.innerHTML = '<div class="video-placeholder">导入材料后显示视频</div>';
+  player.mode=null; player.yt=null; player.video=null; player.ready=false; player.loop=false; player.loopContinuous=false;
+}
+function mountYoutube(id){
+  clearPlayer();
+  const wrap = document.getElementById('videoWrap');
+  wrap.innerHTML = '<div id="ytPlayer" style="position:absolute;inset:0"></div>';
+  player.mode='youtube';
+  if(window.YT && window.YT.Player){ buildYt(id); }
+  else{
+    window.onYouTubeIframeAPIReady = ()=>{ window.onYouTubeIframeAPIReady=null; buildYt(id); };
+    const s=document.createElement('script'); s.src='https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  }
+}
+function buildYt(id){
+  player.yt = new YT.Player('ytPlayer', {
+    videoId:id, playerVars:{playsinline:1, rel:0},
+    events:{ onReady:()=>{ player.ready=true; seekCurrent(); }, onStateChange:e=>{ onVideoState(e.data); } }
+  });
+}
+function mountVideo(src){
+  clearPlayer();
+  const wrap = document.getElementById('videoWrap');
+  const v = document.createElement('video');
+  v.controls = true; v.src = src;
+  v.addEventListener('timeupdate', localTick);
+  v.addEventListener('ended', ()=>{ if(player.loop){ v.currentTime=player.segStart; v.play(); } });
+  wrap.appendChild(v);
+  player.mode='video'; player.video=v; player.ready=true;
+  seekCurrent();
+}
+function mountLocal(blob){
+  mountVideo(URL.createObjectURL(blob));
+}
+function mountStream(url){
+  // B 站等无 iframe 控制接口的平台：走后端流式代理 → 本地 <video>（支持逐句跳/循环/同步）
+  mountVideo('/api/stream?url='+encodeURIComponent(url));
+}
+function localTick(){
+  syncHighlight();
+  if(player.mode!=='video'||!player.video||!player.loop) return;
+  if(!player.video.paused && player.video.currentTime >= player.segEnd){
+    if(player.loopContinuous){ player.video.currentTime = player.segStart; }
+    else { player.video.pause(); player.loop=false; }
+  }
+}
+function onVideoState(st){
+  if(player.mode==='youtube' && player.loop && st===0){ // 视频到结尾，兜底停止
+    player.loop=false;
+  }
+}
+function playSegment(start, end, loop){
+  player.segStart=start; player.segEnd=end; player.loop=loop; player.loopContinuous=false;
+  seek(start); play();
+}
+function playLoop(start, end){
+  player.segStart=start; player.segEnd=end; player.loop=true; player.loopContinuous=true;
+  seek(start); play();
+}
+function seek(t){
+  if(player.mode==='youtube' && player.yt && player.ready){ try{ player.yt.seekTo(t,true); }catch(e){} }
+  else if(player.mode==='video' && player.video){ try{ player.video.currentTime=t; }catch(e){} }
+}
+function play(){
+  if(player.mode==='youtube' && player.yt && player.ready){ try{ player.yt.playVideo(); }catch(e){} }
+  else if(player.mode==='video' && player.video){ player.video.play().catch(()=>{}); }
+}
+function pause(){
+  player.loop=false; player.loopContinuous=false;
+  if(player.mode==='youtube' && player.yt && player.ready){ try{ player.yt.pauseVideo(); }catch(e){} }
+  else if(player.mode==='video' && player.video){ player.video.pause(); }
+}
+function seekCurrent(){ if(current && segs[curIdx]) seek(segs[curIdx].start); }
+function syncHighlight(){
+  // 根据当前播放时间定位正在播放的句子，驱动字幕高亮同步
+  if(!current || !segs.length) return;
+  let t=null;
+  if(player.mode==='youtube' && player.yt && player.ready){ try{ t=player.yt.getCurrentTime(); }catch(e){ return; } }
+  else if(player.mode==='video' && player.video){ t=player.video.currentTime; }
+  if(t===null) return;
+  let idx=-1;
+  for(let i=0;i<segs.length;i++){
+    if(t>=segs[i].start && t<segs[i].end){ idx=i; break; }
+  }
+  if(idx>=0 && idx!==playingIdx){
+    playingIdx=idx;
+    refreshHighlight();
+  }
+}
+function refreshHighlight(){
+  // 整段跟读模式：全文高亮跟随播放进度
+  if(curStage==='recite' && reciteMode==='whole' && revealed){
+    const box=document.getElementById('sentenceBox');
+    box.innerHTML='<div class="txt ru" style="line-height:2">'+fullTranscriptHtml()+'</div>';
+  }
+  // 左侧台词列表：标记正在播放的句子并滚动到可见
+  const list=document.getElementById('sentList');
+  if(list){
+    list.querySelectorAll('.sent').forEach((el,i)=>{ el.classList.toggle('playing', i===playingIdx); });
+    const playing=list.querySelector('.sent.playing');
+    if(playing) playing.scrollIntoView({block:'nearest'});
+  }
+}
+
+/* =====================================================================
+   字幕解析
+===================================================================== */
+function parseTime(t){
+  t=t.trim();
+  let m=t.match(/(\d+):(\d{2}):(\d{2})[,.](\d{1,3})/);
+  if(m) return (+m[1])*3600+(+m[2])*60+(+m[3])+(+m[4])/Math.pow(10,m[4].length);
+  m=t.match(/(\d+):(\d{2})[,.](\d{1,3})/);
+  if(m) return (+m[1])*60+(+m[2])+(+m[3])/Math.pow(10,m[3].length);
+  return null;
+}
+function cleanVtt(s){ return s.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(); }
+function parseSubtitles(text){
+  const s = (text||'').replace(/\r\n/g,'\n').trim();
+  const blocks = s.split(/\n{2,}/);
+  const cues = [];
+  for(let b of blocks){
+    b=b.trim(); if(!b) continue;
+    if(/^(WEBVTT|Kind:|Language:|NOTE)/i.test(b)) continue;
+    const lines = b.split('\n').map(l=>l.trim()).filter(Boolean);
+    const tl = lines.find(l=>l.includes('-->'));
+    if(!tl) continue;
+    const parts = tl.split('-->');
+    const start = parseTime(parts[0]), end = parseTime(parts[1]||'');
+    if(start===null) continue;
+    const txt = lines.filter(l=>!l.includes('-->') && !/^\d+$/.test(l)).join(' ').trim();
+    if(txt) cues.push({start, end:end===null?start+3:end, text:cleanVtt(txt)});
+  }
+  return cues;
+}
+function cuesToSentences(cues){
+  // 规则断句（AI 不可用时的兜底）。核心目标：宁可切碎也别合并。
+  // 切句位置（按优先级）：
+  //   1) 句末标点（. ! ? …）
+  //   2) cue 边界 —— YouTube 自动字幕无标点时，每条 cue 通常已是自然语句
+  //   3) 单句超过 18 词，强制在最断开处切
+  // 合并：切完后再合并 < 2 词的碎片（避免 1 词句）
+  const words=[];
+  cues.forEach(c=>{
+    const ws=c.text.trim().split(/\s+/).filter(Boolean);
+    if(!ws.length) return;
+    const dur=c.end-c.start;
+    ws.forEach((w,i)=>{ words.push({w, s:c.start+dur*(i/Math.max(1,ws.length)), e:c.start+dur*((i+1)/Math.max(1,ws.length)), cueStart: c.start, cueEnd: c.end}); });
+  });
+  if(!words.length) return [];
+
+  // 标记每个词是否「句末」
+  const isEnd=new Array(words.length).fill(false);
+  for(let i=0;i<words.length;i++){
+    const w=words[i].w;
+    if(/[.!?…]$/.test(w)) isEnd[i]=true;
+  }
+  // cue 边界：每条 cue 的最后一个词都视为潜在句末（无论时长）。
+  // 原因：字幕是手工切好的，cue 边界 = 说话人停顿/换气，即是自然语句边界。
+  for(let i=1;i<words.length;i++){
+    if(words[i].cueStart !== words[i-1].cueStart) isEnd[i-1]=true;
+  }
+
+  const out=[]; let cur=null;
+  const wc=s=>s.trim().split(/\s+/).filter(Boolean).length;
+  const MAXW=18, MINW=2;
+  const push=()=>{ if(!cur) return; out.push({start:cur.start,end:cur.end,text:cur.text.trim()}); cur=null; };
+  for(let i=0;i<words.length;i++){
+    const w=words[i];
+    if(!cur) cur={start:w.s,end:w.e,text:w.w};
+    else { cur.end=w.e; cur.text+=' '+w.w; }
+    const atEnd=isEnd[i];
+    const tooLong=wc(cur.text)>=MAXW;
+    const lastOne=(i===words.length-1);
+    if(atEnd || tooLong || lastOne){
+      // 如果太长且当前词不是句末，但后面还有词，就强制先切一刀（避免后续全挤进最后一句）
+      if(tooLong && !atEnd && !lastOne){
+        push();
+      } else {
+        push();
+      }
+    }
+  }
+  if(cur) push();
+  // 合并过短碎片（<2 词）到前一句，避免 1 词句
+  const merged=[];
+  for(const s of out){
+    const wc2=s.text.trim().split(/\s+/).filter(Boolean).length;
+    if(wc2<MINW && merged.length){
+      const p=merged[merged.length-1];
+      p.text=(p.text+' '+s.text).trim(); p.end=s.end;
+    } else merged.push(s);
+  }
+  return merged.filter(s=>s.text.trim());
+}
+function plainToSentences(text){
+  // 过滤掉单独一行的短标题（如 "Утро", "Часть 1" 等），通常只有 1-3 个词
+  const lines = (text||'').trim().split('\n').map(l=>l.trim()).filter(Boolean);
+  const filtered = lines.filter(l => {
+    const words = l.split(/\s+/).filter(Boolean);
+    // 跳过单独一行且词数 < 4 的行（很可能是标题/章节名，不是正文）。
+    // 注意：必须保留最后一行 —— 它是被丢弃的行，需要原样保留（否则整段文本会被吞掉）。
+    if (words.length < 4 && lines.indexOf(l) !== lines.length - 1) return false;
+    return true;
+  });
+  const cleaned = filtered.join(' ');
+  const parts = cleaned.match(/[^.!?…\n]+[.!?…]+|[^.!?…\n]+$/g);
+  if(parts && parts.length>1){
+    return parts.map(t=>t.trim()).filter(Boolean).map((t,i)=>({start:i*4, end:i*4+4, text:t}));
+  }
+  // 无标点时：按俄语语法信号智能断句
+  // 信号（按优先级）：
+  //   1. 句末标点（已在上面处理）
+  //   2. 对立连词：а/но/однако/зато（通常连接两个独立分句）
+  //   3. 从属连词：чтобы/если/когда/хотя/потому
+  //   4. 疑问词：что/как/где/почему/зачем/куда
+  //   5. 语气词：да/нет/ну/ладно/хорошо/давай/пожалуйста
+  //   6. 新主语代词 + 动词变位（я/ты/мы/вы/они/он/она/оно + ет/ют/ю/ёшь 等）
+  //   7. 单句超过 18 词，强制切
+  const words = cleaned.trim().split(/\s+/).filter(Boolean);
+  if(words.length <= 1) return words.map(w=>({start:0, end:4, text:w}));
+  const out=[]; let cur=[];
+  const isEndWord = (w) => /[.!?…]$/.test(w);
+  const isClauseStart = (w, next) => {
+    const low = w.toLowerCase();
+    // 对立连词（通常连接两个独立分句）—— 连词跟在后句，所以不算新句起点
+    // 疑问词
+    if (/^(что|как|где|почему|зачем|куда|ли|разве|неужели)$/.test(low)) return true;
+    // 语气词独立成句
+    if (/^(да|нет|ну|ладно|хорошо|давай|пожалуйста|вот)$/.test(low)) return true;
+    // 代词主语 + 下一词是动词变位 → 新主谓结构，新句子
+    // 注意：俄语字幕常常省略标点，所以遇到新的代词主语就直接切分（即使下一词不是动词）
+    if (/^(я|ты|мы|вы|они|он|она|оно)$/.test(low) && next) {
+      const nl = next.toLowerCase();
+      if (/(ет|ют|ю|ёшь|ёте|ешь|ете|ется|ются|ал|ла|ло|ли|ть|ти|лся|лась|лось|ались)$/i.test(nl)) return true;
+    }
+    // 新主语代词也是新句子的起点（句中无标点时常有省略）
+    if (/^(я|ты|мы|вы|они|он|она|оно)$/.test(low) && i >= 4) return true;
+    // 但 / 然而 (но/однако) 引出新句 — 它是连词，需独立切分
+    if (/^(но|однако|зато)$/.test(low)) return true;
+    // 从属连词（если/когда/хотя 等）是新分句起点
+    if (/^(чтобы|если|когда|хотя|потому|поэтому|так как|перед тем как|после того как)$/.test(low)) return true;
+    return false;
+  };
+  const MAXW = 18;
+  for(let i=0; i<words.length; i++){
+    const w = words[i];
+    const next = words[i+1];
+    // 先判断当前词是否是新句子的起点（在 push 之前，cur 还不包含 w）
+    const atNewStart = (i > 0 && cur.length >= 2 && isClauseStart(w, next));
+    if(atNewStart){
+      out.push({start: out.length * 4, end: out.length * 4 + 4, text: cur.join(' ')});
+      cur = [];
+    }
+    cur.push(w);
+    let shouldCut = false;
+    if(isEndWord(w)) shouldCut = true;
+    else if(cur.length >= MAXW) shouldCut = true;
+    if(shouldCut){
+      out.push({start: out.length * 4, end: out.length * 4 + 4, text: cur.join(' ')});
+      cur = [];
+    }
+  }
+  if(cur.length) out.push({start: out.length * 4, end: out.length * 4 + 4, text: cur.join(' ')});
+  // 合并过短碎片（<2 词）
+  const merged=[];
+  for(const s of out){
+    const wc2 = s.text.trim().split(/\s+/).filter(Boolean).length;
+    if(wc2 < 2 && merged.length){
+      const p = merged[merged.length-1];
+      p.text = (p.text + ' ' + s.text).trim();
+      p.end = s.end;
+    } else merged.push(s);
+  }
+  return merged.filter(s=>s.text.trim());
+}
+function buildSentences(rawText){
+  const cues = parseSubtitles(rawText);
+  if(cues.length){ return {sentences:cuesToSentences(cues), hasTimestamps:true}; }
+  return {sentences:plainToSentences(rawText), hasTimestamps:false};
+}
+// 把 razdel 返回的纯字符串数组转成句子对象（与 cuesToSentences 同结构）。
+function wrapSentences(strings){
+  return strings.map(t=>({text:t, start:0, end:0}));
+}
+
+// 用原生俄语开源工具 razdel 做无标点断句（后端 /api/segment）。
+// 无时间戳且无标点时，比本地规则准确得多。
+async function ruSegment(text){
+  try{
+    const r=await fetch('/api/segment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    const j=await r.json();
+    if(j.ok && Array.isArray(j.sentences)) return j.sentences;
+    return null; // razdel 未安装等，交回规则断句
+  }catch(e){ return null; }
+}
+
+let segPreviewSentences=null;
+let segPreviewCues=null;
+let segPreviewUnderstanding=null;
+let segPreviewTranslations=null;
+let segPreviewOnComplete=null;
+
+function openSegPreview(sentences, cues, onComplete){
+  segPreviewSentences=sentences; segPreviewCues=cues;
+  segPreviewOnComplete=onComplete||null;
+  // 从传入的 sentences 对象中读取 _understanding 和 _translations
+  segPreviewUnderstanding = (sentences && sentences._understanding) ? sentences._understanding : null;
+  // translations 与 sentences 一一对应，可能为 null（兜底分支时无）
+  segPreviewTranslations = (sentences && sentences._translations) ? sentences._translations : null;
+  const list=document.getElementById('segPreviewList');
+  // 主台词列表：把断句后的字幕逐行渲染出来（序号 + 俄语原文 + 中文译文 + 时间戳）
+  const sentList=document.getElementById('segSentList');
+  if(sentList){
+    sentList.innerHTML = sentences.map((s,i)=>{
+      const tr = segPreviewTranslations && segPreviewTranslations[i] ? segPreviewTranslations[i] : '';
+      return '<div class="seg-sent" data-idx="'+i+'">'
+        +'<span class="idx">'+(i+1)+'</span>'
+        +'<span><span class="ru">'+s.text.replace(/</g,'&lt;')+'</span>'
+        + (tr ? '<div class="tr-hint">'+tr.replace(/</g,'&lt;')+'</div>' : '')
+        +'<div class="hint" style="font-size:10px;margin:2px 0 0">⏱ '+s.start.toFixed(1)+'s – '+s.end.toFixed(1)+'s</div>'
+        +'</span></div>';
+    }).join('');
+  }
+  const head = segPreviewUnderstanding
+    ? '<div class="translation" style="margin-bottom:10px"><div class="zh-label">📖 AI 对全文的理解</div><div>'+segPreviewUnderstanding.replace(/</g,'&lt;')+'</div></div>'
+    : '';
+  list.innerHTML=head+sentences.map((s,i)=>{
+    const tr = segPreviewTranslations && segPreviewTranslations[i] ? segPreviewTranslations[i] : '';
+    return '<div class="qcard" style="margin-bottom:6px">'
+      +'<div class="qnum">第 '+(i+1)+' 句</div>'
+      +'<div class="qtxt ru">'+s.text.replace(/</g,'&lt;')+'</div>'
+      + (tr ? '<div class="zh-label" style="margin-top:4px;font-size:12px">🇨🇳</div><div style="font-size:13px;color:#5a4632;margin-top:2px">'+tr.replace(/</g,'&lt;')+'</div>' : '')
+      +'<div class="hint" style="font-size:11px;margin:6px 0 0">⏱ '+s.start.toFixed(1)+'s – '+s.end.toFixed(1)+'s</div>'
+      +'</div>';
+  }).join('');
+  document.getElementById('segFeedback').value='';
+  openModal('modal-seg-preview');
+}
+
+function applyAISegmentation(){
+  if(!segPreviewSentences || !segPreviewSentences.length){ toast('没有待应用的断句结果'); return; }
+  const sents=segPreviewSentences;
+  // 把逐句翻译合并进句子对象（学习时可直接看到每句意思）
+  if(segPreviewTranslations && segPreviewTranslations.length===sents.length){
+    sents.forEach((s,i)=>{ s.tr = segPreviewTranslations[i] || ''; });
+  }
+  if(segPreviewOnComplete){
+    closeModal('modal-seg-preview');
+    segPreviewSentences=null; segPreviewCues=null; segPreviewOnComplete=null;
+    segPreviewUnderstanding=null; segPreviewTranslations=null;
+    segPreviewOnComplete(sents);
+  } else {
+    closeModal('modal-seg-preview');
+    applySegment(segPreviewSentences);
+    segPreviewSentences=null; segPreviewCues=null; segPreviewTranslations=null;
+  }
+}
+
+async function regenerateWithFeedback(){
+  const fb=document.getElementById('segFeedback').value.trim();
+  const list=document.getElementById('segPreviewList');
+  const sentList=document.getElementById('segSentList');
+  const btn=event.target.closest('button');
+  if(btn){ btn.disabled=true; btn.textContent='🔄 重新生成中…'; }
+  list.innerHTML='<div class="ai-loading">🤖 AI 正在根据您的意见重新断句…</div>';
+  try{
+    const s=await aiSegmentFromCues(segPreviewCues, fb, segPreviewSentences);
+    if(s && s.length){
+      segPreviewSentences=s;
+      if(s._understanding) segPreviewUnderstanding=s._understanding;
+      segPreviewTranslations = (s && s._translations) ? s._translations : null;
+      // 同步更新主台词列表
+      if(sentList){
+        sentList.innerHTML = s.map((x,i)=>{
+          const tr = segPreviewTranslations && segPreviewTranslations[i] ? segPreviewTranslations[i] : '';
+          return '<div class="seg-sent" data-idx="'+i+'">'
+            +'<span class="idx">'+(i+1)+'</span>'
+            +'<span><span class="ru">'+x.text.replace(/</g,'&lt;')+'</span>'
+            + (tr ? '<div class="tr-hint">'+tr.replace(/</g,'&lt;')+'</div>' : '')
+            +'<div class="hint" style="font-size:10px;margin:2px 0 0">⏱ '+x.start.toFixed(1)+'s – '+x.end.toFixed(1)+'s</div>'
+            +'</span></div>';
+        }).join('');
+      }
+      const head = segPreviewUnderstanding
+        ? '<div class="translation" style="margin-bottom:10px"><div class="zh-label">📖 AI 对全文的理解</div><div>'+segPreviewUnderstanding.replace(/</g,'&lt;')+'</div></div>'
+        : '';
+      list.innerHTML=head+s.map((x,i)=>{
+        const tr = segPreviewTranslations && segPreviewTranslations[i] ? segPreviewTranslations[i] : '';
+        return '<div class="qcard" style="margin-bottom:6px">'
+          +'<div class="qnum">第 '+(i+1)+' 句</div>'
+          +'<div class="qtxt ru">'+x.text.replace(/</g,'&lt;')+'</div>'
+          + (tr ? '<div class="zh-label" style="margin-top:4px;font-size:12px">🇨🇳</div><div style="font-size:13px;color:#5a4632;margin-top:2px">'+tr.replace(/</g,'&lt;')+'</div>' : '')
+          +'<div class="hint" style="font-size:11px;margin:6px 0 0">⏱ '+x.start.toFixed(1)+'s – '+x.end.toFixed(1)+'s</div>'
+          +'</div>';
+      }).join('');
+      toast('已重新生成，共 '+s.length+' 句，请检查');
+    } else {
+      list.innerHTML='<div style="color:var(--danger)">重新生成失败，请修改意见后重试</div>';
+      toast('重新生成失败');
+    }
+  }catch(e){
+    list.innerHTML='<div style="color:var(--danger)">请求失败：'+(e.message||e)+'</div>';
+  }
+  if(btn){ btn.disabled=false; btn.textContent='重新生成'; }
+}
+function applySegment(sents){
+  current.sentences=sents;
+  persist();
+  segs=sents;
+  curIdx=Math.min(curIdx, sents.length-1);
+  if(curIdx<0) curIdx=0;
+  state.session.index=curIdx;
+  saveLS(LS.session, state.session);
+  revealed=false;
+  renderSents();
+  renderStudy();
+  toast('已重新断句：'+sents.length+' 句');
+}
+
+function mapSentencesToCues(sentences, cues){
+  // 把每个 cue 拆成 (normalized-word, start, end) 三元组数组（按词数等分时间）。
+  const wordTimes=[];
+  cues.forEach(c=>{
+    const ws=c.text.trim().split(/\s+/).filter(Boolean);
+    const dur=c.end-c.start;
+    ws.forEach((w,i)=>{ wordTimes.push({w:normalizeWord(w), s:c.start+dur*(i/Math.max(1,ws.length)), e:c.start+dur*((i+1)/Math.max(1,ws.length))}); });
+  });
+  const out=[];
+  let wi=0;
+  for(const sent of sentences){
+    const sw=sent.trim().split(/\s+/).map(normalizeWord).filter(Boolean);
+    if(!sw.length) continue;
+    let start=null, end=null;
+    let matched=0;
+    for(const w of sw){
+      // 从 wi 起顺序找下一个完全匹配的词
+      while(wi<wordTimes.length && wordTimes[wi].w!==w) wi++;
+      if(wi>=wordTimes.length) break;
+      if(start===null) start=wordTimes[wi].s;
+      end=wordTimes[wi].e; wi++; matched++;
+    }
+    if(start!==null && matched===sw.length) out.push({start, end, text: sent.trim()});
+  }
+  return out.length>=Math.max(1, Math.floor(sentences.length*0.5)) ? out : null;
+}
+
+// 软分块：在潜在句号位置或 cue 边界附近切，每块 ≤ chunkSize 词，并保留 overlap 个词。
+// 这样不会把一个完整句子从中间切到两个块里。
+function softChunkCues(cues, chunkSize=20, overlap=5){
+  const blocks=[];
+  let i=0;
+  while(i<cues.length){
+    // 收集若干 cues，总词数不超过 chunkSize
+    let wordCount=0;
+    let j=i;
+    const collected=[];
+    while(j<cues.length && wordCount<chunkSize){
+      const ws=cues[j].text.trim().split(/\s+/).filter(Boolean);
+      if(!ws.length){ j++; continue; }
+      collected.push(cues[j]);
+      wordCount+=ws.length;
+      j++;
+    }
+    if(!collected.length) break;
+    blocks.push({cues:collected, start:i, end:j-1});
+    if(j>=cues.length) break;
+    // 倒退 overlap 个词
+    let back=0, k=j-1;
+    while(k>i && back<overlap){
+      const ws=cues[k].text.trim().split(/\s+/).filter(Boolean);
+      back+=ws.length;
+      k--;
+    }
+    i = Math.max(i+1, k+1);
+  }
+  return blocks;
+}
+
+async function aiSegmentFromCues(cues, feedback, prevSentences){
+  const s=state.settings;
+  if(!s.key) return null;
+  if(!cues || !cues.length) return null;
+  const fullText=cues.map(c=>c.text).join(' ');
+  const inWords=fullText.trim().split(/\s+/).filter(Boolean);
+  if(!inWords.length) return null;
+
+  // 1) 先让 AI 用俄语读懂全文（理解 + 句数估计）。这一步在整段文本较短时尤其关键：
+  //    上下文能让 AI 知道「这里其实是一句」，「那里其实该断开」。
+  //    用俄语理解，不翻译为中文，避免翻译过程中的信息损失，断句更准确。
+  async function getUnderstanding(text, hasFeedback){
+    if(hasFeedback) return null; // 用户已经给意见，无需再做理解
+    const sys = `Ты — русский языковой эксперт. Прочитай следующий текст без знаков препинания (субтитры) и опиши:
+
+1) Где, по твоему мнению, находятся естественные границы предложений? Перечисли их по порядку (например: "после слова X, после слова Y").
+2) Сколько всего естественных предложений ты оцениваешь?
+3) Назови ключевые грамматические сигналы, по которым ты определил границы (родительный падеж, согласование, союзы, вводные слова и т.д.).
+
+Строго output только JSON: {"sentence_boundaries":["...","..."],"est_sentences":N,"signals":"..."}`;
+    try{
+      const content=await callAI([{role:'system',content:sys},{role:'user',content:'Русский текст:\n'+text}]);
+      const parsed=parseAIJSON(content);
+      if(parsed && (parsed.sentence_boundaries || parsed.est_sentences)) return parsed;
+    }catch(e){}
+    return null;
+  }
+
+  // 2) 软分块（重叠）— 避免在句子中间切断
+  const blocks = softChunkCues(cues, 20, 5);
+
+  // 3) prompt：让 AI 自己理解并断句，不给规则，让它发挥语言能力
+  //    采用「先理解、再断句」两阶段：先让 AI 读懂全文，再逐块切分，每块内
+  //    只要求 AI 在「句子边界」处断开，避免它在句子中间乱切。
+  const sysBase = `Ты — русский языковой эксперт. Твоя задача — разбить текст на естественные предложения.
+
+Важно:
+- Заголовки (отдельные строки, короткие фразы) НЕ являются субтитрами — игнорируй их.
+- Не добавляй, не удаляй и не меняй ни одного слова.
+- Вставляй только знаки препинания (, . ! ? …).
+- Каждое предложение должно быть завершающим (оканчиваться на . ! ? …).
+- Не объединяй разные предложения в одно — лучше разбить, чем соединить.
+- Строго output только JSON: {"sentences":["Предложение 1.","Предложение 2?","Предложение 3."]}
+
+Примеры (только для понимания правила):
+
+Пример 1 — заголовок не является субтитром:
+  Исходный текст: утро Иван просыпается в 6:00 утра он видит восход солнца
+  Неправильно: {"sentences":["Иван просыпается в 6:00 утра он видит восход солнца."]}
+  Правильно: {"sentences":["Иван просыпается в 6:00 утра. Он видит восход солнца."]}
+  (Заголовок "утро" удаляется, он не является субтитром.)
+
+Пример 2 — глагол субъекта присоединяется к предыдущему предложению, а не начинает новое:
+  Исходный текст: видит восход солнца он идёт в душ после
+  Неправильно: {"sentences":["Видит восход солнца.","Он идёт в душ после."]}
+  Правильно: {"sentences":["Он видит восход солнца. Он идёт в душ после."]}
+  (Глагол "видит" требует подлежащего "он", поэтому "он" присоединяется к предыдущему предложению, а не начинает новое.)`;
+
+  const sys = sysBase;
+
+  function sysWithFeedback(fb, prev, understanding){
+    let t = sysBase + `
+
+Обратная связь от пользователя: ${fb}
+`;
+    if(prev && prev.length){
+      t += `\nПредыдущий вывод: ${prev.map((x,i)=>x).join(' | ')}\n`;
+    }
+    return t;
+  }
+
+  // 4) 校验：词数完全一致 + 词序一致
+  function validate(parsed, origWords){
+    if(!parsed || !parsed.sentences || !parsed.sentences.length) return {ok:false, reason:'空输出'};
+    const outSeq=parsed.sentences.join(' ').trim().split(/\s+/).filter(Boolean).map(normalizeWord);
+    const inSeq=origWords.map(normalizeWord);
+    if(outSeq.length!==inSeq.length) return {ok:false, reason:'词数不符：原文'+inSeq.length+'，输出'+outSeq.length};
+    for(let i=0;i<inSeq.length;i++) if(outSeq[i]!==inSeq[i]) return {ok:false, reason:'第'+(i+1)+'词不符'};
+    return {ok:true};
+  }
+
+  // 4b) 示例验证器：检查 AI 的回答是否符合示例规则
+  //     如果 AI 的回答完全符合示例格式，接受答案
+  function validateExample(content){
+    const textContent = content || '';
+    // 支持多种正确标记格式
+    const hasCorrectMarker = textContent.includes('Правильно') || textContent.includes('正确');
+    if(hasCorrectMarker && (
+      (textContent.includes('Иван просыпается в утра махется моченовсто.') && textContent.includes('Он видит восход солнца.')) ||
+      (textContent.includes('Он видит восход солнца.') && textContent.includes('Он идёт в душ после.'))
+    )){
+      return true;
+    }
+    return false;
+  }
+
+  // 5) 解析：把 AI 输出切成 {sentences, understanding, translations}
+  function parseResult(content){
+    const parsed=parseAIJSON(content);
+    if(!parsed) return null;
+    if(parsed.sentences && Array.isArray(parsed.sentences)){
+      // 检查是否完全符合示例格式
+      if(validateExample(content)){
+        // AI 正确回答示例，接受答案
+        return {
+          sentences: parsed.sentences,
+          understanding: parsed.translation||parsed.understanding||null,
+          translations: Array.isArray(parsed.translations) ? parsed.translations : null,
+        };
+      }
+      return {
+        sentences: parsed.sentences,
+        understanding: parsed.translation||parsed.understanding||null,
+        translations: Array.isArray(parsed.translations) ? parsed.translations : null,
+      };
+    }
+    return null;
+  }
+
+  try{
+    const hasFeedback = !!(feedback && feedback.trim());
+    // 5a) 先获取全文理解（仅在没有用户反馈时）
+    const understanding = hasFeedback ? null : await getUnderstanding(fullText, false);
+    const understandingText = understanding ? (understanding.translation||'') : null;
+
+    // 5b) 逐块断句，每块最多重试 3 次
+    //     allSentences 与 allTrans 保持严格一一对应（长度相等）。
+    const allSentences=[], allTrans=[];
+    let block=[], blockTrans=[]; // 当前累积的句子（按词数映射到原文）
+
+    // 把一个 got 结果（sentences + translations）按 skip 跳过前 skip 句后追加到 all
+    const pushGot=(got, skip, fromBlock)=>{
+      const gs=got.sentences, gt=got.translations;
+      for(let k=skip; k<gs.length; k++){
+        allSentences.push(gs[k]);
+        allTrans.push(gt && gt[k] ? gt[k] : '');
+      }
+    };
+    // 把 block 刷入 all
+    const flushBlock=()=>{
+      for(let i=0;i<block.length;i++){
+        allSentences.push(block[i]);
+        allTrans.push(blockTrans[i]||'');
+      }
+      block=[]; blockTrans=[];
+    };
+
+    for(let bi=0; bi<blocks.length; bi++){
+      const blk = blocks[bi];
+      const blockText = blk.cues.map(c=>c.text).join(' ');
+      const blockWords = blockText.trim().split(/\s+/).filter(Boolean);
+      if(!blockWords.length) continue;
+      let got=null;
+      for(let attempt=0; attempt<=2 && !got; attempt++){
+        const prev = (prevSentences && prevSentences.length && attempt>0) ? prevSentences.map(x=>x.text) : null;
+        const sysMsg = (attempt===0 && !hasFeedback) ? sys : sysWithFeedback(feedback||null, prev, understandingText);
+        const userMsg = (attempt===0 && !hasFeedback)
+          ? '原文（无标点）：\n'+blockText
+          : '原文（无标点）：\n'+blockText + (feedback?'\n用户反馈：'+feedback:'');
+        const content=await callAI([{role:'system',content:sysMsg},{role:'user',content:userMsg}]);
+        const r=parseResult(content);
+        if(r && r.sentences.length){
+          // 校验：词数与原文完全一致；translations 可选（长度不一致时按空处理，不阻断）
+          const v=validate({sentences:r.sentences}, blockWords);
+          if(v.ok){
+            got=r;
+            if(!r.translations || r.translations.length!==r.sentences.length){
+              // 兼容不输出 translations 的模型：用空串补齐，避免后续越界
+              got.translations = r.translations || [];
+              while(got.translations.length<r.sentences.length) got.translations.push('');
+            }
+          }
+        }
+      }
+      if(!got) return null;
+      // 去掉块首与上一块重叠的句子：找「首句」末尾与 `block` 最后一个句子末尾的最大词匹配
+      if(block.length){
+        // 把 block 末尾的 1~2 个句子 + got 的前 1~2 个句子看作重叠候选
+        const tailWords = [];
+        for(let k=Math.max(0,block.length-2); k<block.length; k++){
+          tailWords.push(...block[k].trim().split(/\s+/).filter(Boolean).map(normalizeWord));
+        }
+        const headWords = [];
+        for(let k=0; k<Math.min(2,got.sentences.length); k++){
+          headWords.push(...got.sentences[k].trim().split(/\s+/).filter(Boolean).map(normalizeWord));
+        }
+        // 找最大公共后缀/前缀
+        let overlapCount=0;
+        const maxL=Math.min(tailWords.length, headWords.length, 8);
+        for(let L=maxL; L>=1; L--){
+          let ok=true;
+          for(let i=0;i<L;i++){
+            if(tailWords[tailWords.length-L+i]!==headWords[i]){ ok=false; break; }
+          }
+          if(ok){ overlapCount=L; break; }
+        }
+        // got 的前 overlapCount 个句子视为重复，不加入 allSentences
+        if(overlapCount>0){
+          // 计算 got 开头应跳过的句子数（按词数累加 ≥ overlapCount）
+          let skip=0, cnt=0;
+          for(const s of got.sentences){
+            const w=s.trim().split(/\s+/).filter(Boolean).length;
+            if(cnt+w <= overlapCount){ cnt+=w; skip++; } else break;
+          }
+          pushGot(got, skip);
+        } else {
+          // 无重叠：把 block 全部刷入，got 全部加入
+          flushBlock();
+          pushGot(got, 0);
+        }
+      } else {
+        // 第一个块：直接保留 got 的最后 1 句作为下一个块的「重叠区」
+        const last = got.sentences[got.sentences.length-1];
+        const lastT = got.translations ? got.translations[got.translations.length-1] : '';
+        pushGot(got, 0, true);
+        // 把刚推入的最后 1 句从 all 里移出，放到 block 里
+        allSentences.pop(); allTrans.pop();
+        block = last ? [last] : [];
+        blockTrans = lastT ? [lastT] : [];
+      }
+    }
+    // 收尾：把 block 残留的最后一句刷入
+    flushBlock();
+
+    if(!allSentences.length) return null;
+    // 最终校验：词数与原文完全一致
+    const finalWords=allSentences.join(' ').trim().split(/\s+/).filter(Boolean).map(normalizeWord);
+    const inSeq=inWords.map(normalizeWord);
+    if(finalWords.length!==inSeq.length) return null;
+    for(let i=0;i<inSeq.length;i++) if(finalWords[i]!==inSeq[i]) return null;
+
+    const mapped=mapSentencesToCues(allSentences, cues);
+    if(mapped){
+      mapped._understanding = understandingText;
+      mapped._translations = allTrans;
+      return mapped;
+    }
+    return null;
+  }catch(e){ return null; }
+}
+
+
+/* =====================================================================
+   点词翻译（词典）
+===================================================================== */
+function sentenceToHtml(text){
+  const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return esc.split(/(\s+|[.,!?…;:—\-–"«»()'’]+)/g).map(tok=>{
+    if(/^\s+$/.test(tok) || /^[.,!?…;:—\-–"«»()'’]+$/.test(tok)) return tok;
+    return '<span class="w" data-w="'+tok.replace(/"/g,'&quot;')+'">'+tok+'</span>';
+  }).join('');
+}
+function fullTranscriptHtml(){
+  // 整段文本：逐句拼接，正在播放的句子高亮（无播放进度时回退到当前学习句）
+  const hi = playingIdx>=0 ? playingIdx : curIdx;
+  return segs.map((s,i)=>{
+    const html = sentenceToHtml(s.text);
+    return i===hi ? '<span class="cur-sent">'+html+'</span>' : html;
+  }).join(' ');
+}
+async function lookupWord(word){
+  const w = word.replace(/^[«"'(]+|[»"').,;:!?…]+$/g,'').toLowerCase();
+  const lemma = findLemma(w);
+  if(lemma && RU_DICT[lemma]) return RU_DICT[lemma].z;
+  if(state.dict[w]) return state.dict[w];
+  try{
+    const r = await fetch('/api/dict', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({word:w})});
+    const j = await r.json();
+    if(j.ok && j.translation){ state.dict[w]=j.translation; saveLS(LS.dict, state.dict); return j.translation; }
+  }catch(e){}
+  if(lemma && RU_DICT_FULL[lemma] && RU_DICT_FULL[lemma].e) return RU_DICT_FULL[lemma].e;
+  return null;
+}
+let popEl=null;
+async function openWordPop(word, x, y){
+  closeWordPop();
+  popEl=document.createElement('div');
+  popEl.className='word-pop';
+  popEl.innerHTML='<div class="w-head ru">'+word.replace(/</g,'&lt;')+'</div><div class="w-body loading">查询中…</div><div class="row"><button class="btn sm primary" onclick="addWord(\''+word.replace(/'/g,"\\'")+'\')">＋ 加入生词</button><button class="btn sm" onclick="closeWordPop()">关闭</button></div>';
+  document.body.appendChild(popEl);
+  const r=popEl.getBoundingClientRect();
+  let px=Math.min(x, window.innerWidth-r.width-10), py=Math.min(y+12, window.innerHeight-r.height-10);
+  popEl.style.left=Math.max(8,px)+'px'; popEl.style.top=Math.max(8,py)+'px';
+  const body=popEl.querySelector('.w-body');
+  const t=await lookupWord(word);
+  body.classList.remove('loading');
+  body.textContent = t || '未查到，稍后重试或点击 AI 解析';
+}
+function closeWordPop(){ if(popEl){ popEl.remove(); popEl=null; } }
+document.addEventListener('click', e=>{
+  const w=e.target.closest && e.target.closest('.w');
+  if(w){ const word=w.getAttribute('data-w'); if(word){ trackLooked(word); openWordPop(word, e.clientX, e.clientY); } return; }
+  if(popEl && !popEl.contains(e.target)) closeWordPop();
+});
+
+/* =====================================================================
+   生词 / SM-2 间隔重复
+===================================================================== */
+function addWord(word){
+  word=(word||'').trim();
+  if(!word) return;
+  if(state.srs.find(c=>c.word===word)){ toast('该词已在生词本'); closeWordPop(); return; }
+  state.srs.push({word, ef:2.5, interval:0, reps:0, due:Date.now(), added:Date.now()});
+  persist(); closeWordPop(); toast('已加入生词：'+word);
+}
+function sm2(card, q){
+  if(q<3){ card.reps=0; card.interval=1; }
+  else { card.interval = card.reps===0?1 : card.reps===1?6 : Math.round(card.interval*card.ef); card.reps++; }
+  card.ef = Math.max(1.3, card.ef + (0.1 - (5-q)*(0.08+(5-q)*0.02)));
+  card.due = Date.now() + card.interval*86400000;
+}
+function dueCards(){ return state.srs.filter(c=>c.due<=Date.now()); }
+
+/* =====================================================================
+   渲染：主界面
+===================================================================== */
+function refreshApp(){
+  // 只更新「自定义素材」下拉框；视图切换由 showView 管理
+  const has = state.materials.length>0;
+  const sel=document.getElementById('matSelect');
+  if(!has){ sel.innerHTML=''; return; }
+  sel.innerHTML = state.materials.map(m=>'<option value="'+m.id+'">'+(m.title||'未命名材料').replace(/</g,'&lt;')+'</option>').join('');
+  const ids = state.materials.map(m=>m.id);
+  let curId = current ? current.id : null;
+  if(!ids.includes(curId)) curId = ids.includes(state.session.materialId) ? state.session.materialId : ids[0];
+  sel.value = curId;
+}
+
+function onSelectMaterial(id){ state.session.materialId=id; state.session.index=0; saveLS(LS.session,state.session); loadMaterial(id); }
+
+function loadMaterial(id){
+  const m = state.materials.find(x=>x.id===id);
+  if(!m) return;
+  mountMaterial(m, true);
+}
+function mountMaterial(m, restoreSession){
+  current=m; segs=m.sentences||[];
+  curIdx = restoreSession ? Math.min(state.session.index||0, segs.length-1) : 0;
+  curStage = restoreSession ? (state.session.stage || 'listen') : 'listen';
+  if(curIdx<0) curIdx=0;
+  playingIdx=-1;
+  revealed=false;
+  resetCoach();
+  // 挂视频
+  if(m.type==='youtube'){ mountYoutube(m.youtubeId); }
+  else if(m.type==='stream'){ mountStream(m.streamUrl); }
+  else if(m.type==='local'){ loadVideoBlob(m.videoBlobId).then(blob=>{ if(blob) mountLocal(blob); }); }
+  renderSents();
+  renderStudy();
+  setStage(curStage);
+  document.getElementById('courseSubmitCard').style.display = (m.courseLevel != null) ? 'block' : 'none';
+  showView('study');
+  refreshApp();
+}
+
+async function loadVideoBlob(id){
+  if(!id) return null;
+  try{
+    const db=await idb();
+    return await new Promise((res,rej)=>{ const tx=db.transaction('videos','readonly'); const rq=tx.objectStore('videos').get(id); rq.onsuccess=()=>res(rq.result||null); rq.onerror=()=>rej(rq.error); });
+  }catch(e){ return null; }
+}
+function idb(){
+  return new Promise((res,rej)=>{ const r=indexedDB.open('rulearn',1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore('videos');
+    r.onsuccess=e=>res(e.target.result); r.onerror=e=>rej(e); });
+}
+async function saveVideoBlob(id, blob){
+  const db=await idb();
+  return new Promise((res,rej)=>{ const tx=db.transaction('videos','readwrite'); tx.objectStore('videos').put(blob,id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}
+
+function renderSents(){
+  const list=document.getElementById('sentList');
+  document.getElementById('sentCount').textContent = segs.length+' 句';
+  list.innerHTML = segs.map((s,i)=>{
+    const done = i<curIdx;
+    return '<div class="sent'+(i===curIdx?' active':'')+'" onclick="goSentence('+(i-curIdx)+')">'
+      +'<span class="idx">'+(i+1)+'</span>'
+      +'<span class="ru">'+(done?'✓ ':'')+s.text.replace(/</g,'&lt;')+'</span></div>';
+  }).join('');
+  const active=list.querySelector('.sent.active');
+  if(active) active.scrollIntoView({block:'nearest'});
+}
+
+function setStage(s){
+  curStage=s; state.session.stage=s; saveLS(LS.session,state.session);
+  document.querySelectorAll('.stage').forEach(el=>el.classList.toggle('active', el.dataset.s===s));
+  renderStudy();
+}
+
+function renderStudy(){
+  if(!current || !segs[curIdx]) return;
+  const seg=segs[curIdx];
+  const box=document.getElementById('sentenceBox');
+  const panel=document.getElementById('stagePanel');
+  document.getElementById('posLabel').textContent=(curIdx+1)+' / '+segs.length;
+  // 原文 / 遮罩（整段跟读模式显示全文，当前句高亮）
+  const wholeMode = curStage==='recite' && reciteMode==='whole';
+  if(!revealed){
+    box.innerHTML='<div class="cover">🙈 原文已隐藏 —— 先听</div>';
+  } else if(wholeMode){
+    box.innerHTML='<div class="txt ru" style="line-height:2">'+fullTranscriptHtml()+'</div>';
+  } else {
+    box.innerHTML='<div class="txt ru">'+sentenceToHtml(seg.text)+'</div>';
+  }
+  // 逐句翻译（AI 断句时附带，学习时直接可见）
+  const tb=document.getElementById('translationBox');
+  if(seg.tr){
+    tb.innerHTML='<div class="zh-label">🇨🇳 本句翻译</div><div>'+seg.tr.replace(/</g,'&lt;')+'</div>';
+    tb.classList.remove('hidden');
+  } else {
+    tb.innerHTML=''; tb.classList.add('hidden');
+  }
+  document.getElementById('btnReveal').textContent = revealed ? (wholeMode?'隐藏全文':'隐藏原文') : (wholeMode?'显示全文':'显示原文');
+  // 阶段面板
+  if(curStage==='listen') renderListen(panel, seg);
+  else if(curStage==='dictate') renderDictate(panel, seg);
+  else renderRecite(panel, seg);
+}
+
+function renderListen(panel, seg){
+  panel.innerHTML='<div class="row" style="flex-wrap:wrap">'
+    +'<button class="btn" onclick="playFull()">▶ 播放整段视频</button>'
+    +'<span class="hint" style="margin:0;align-self:center">←/→ 切换，自动播放</span>'
+    +'</div>';
+}
+function renderDictate(panel, seg){
+  panel.innerHTML='<textarea class="dict-area ru" id="dictInput" placeholder="听音频，输入你听到的俄语句子…"></textarea>'
+    +'<div class="row" style="margin-top:8px"><button class="btn primary" onclick="checkDictate()">检查</button>'
+    +'<button class="btn" onclick="playSeg()">重听</button></div>'
+    +'<div id="dictResult"></div>';
+}
+let reciteMode='sentence';   // 'whole' 整段跟读 | 'sentence' 单句跟读
+let loopReciting=false;      // 是否正在「重读循环本句」
+function setReciteMode(mode){
+  if(loopReciting) stopLoopRecite();
+  reciteMode=mode;
+  renderStudy();
+}
+function renderRecite(panel, seg){
+  const sup = ('SpeechRecognition' in window)||('webkitSpeechRecognition' in window);
+  const whole = reciteMode==='whole';
+  let html='<div class="row" style="margin-bottom:10px">'
+    +'<button class="btn sm'+(whole?' primary':'')+'" onclick="setReciteMode(\'whole\')">🎬 整段跟读</button>'
+    +'<button class="btn sm'+(!whole?' primary':'')+'" onclick="setReciteMode(\'sentence\')">📝 单句跟读</button>'
+    +'</div>';
+  if(whole){
+    html+='<div class="row" style="flex-wrap:wrap">'
+      +'<button class="btn primary" onclick="playFull()">▶ 播放整段视频</button>'
+      +'<button class="btn" id="btnMic" onclick="startWholeRecite()">🎤 开始跟读</button>'
+      +'<button class="btn" onclick="toggleReveal()">'+(revealed?'隐藏':'显示')+'全文</button>'
+      +'</div>';
+  } else {
+    html+='<div class="row" style="flex-wrap:wrap">'
+      +'<button class="btn primary" id="btnMic" onclick="startRecite()">🎤 开始跟读</button>'
+      +'<button class="btn" id="btnLoopRecite" onclick="toggleLoopRecite()">'+(loopReciting?'⏹ 停止循环跟读':'🔁 重读循环本句')+'</button>'
+      +'<button class="btn" onclick="toggleReveal()">'+(revealed?'隐藏':'显示')+'原文</button>'
+      +'</div>';
+  }
+  html+='<div class="row" style="margin-top:8px">'
+    +'<button class="btn sm" onclick="selfRate(1)">😕 不会</button>'
+    +'<button class="btn sm" onclick="selfRate(2)">🙂 一般</button>'
+    +'<button class="btn sm" onclick="selfRate(3)">😎 流利</button>'
+    +'</div>'
+    +'<div id="reciteResult" style="margin-top:10px"></div>';
+  panel.innerHTML=html;
+  if(!sup){ const m=document.getElementById('btnMic'); if(m){ m.disabled=true; m.textContent='浏览器不支持语音识别'; } }
+}
+
+function playSeg(){
+  if(!current||!segs[curIdx]) return;
+  const seg=segs[curIdx];
+  playSegment(seg.start, seg.end, true);
+}
+function playFull(){
+  if(!current) return;
+  player.loop=false;
+  seek(0); play();
+}
+function replay(){ playSeg(); }
+function toggleReveal(){ revealed=!revealed; renderStudy(); }
+function goSentence(d){
+  const n=curIdx+d;
+  if(n<0||n>=segs.length) return;
+  if(loopReciting) stopLoopRecite();
+  curIdx=n; state.session.index=n; saveLS(LS.session,state.session);
+  revealed=false;
+  renderSents(); renderStudy();
+  playSeg();
+}
+
+/* =====================================================================
+   听写比对（LCS 逐字符）
+===================================================================== */
+function norm(s){ return s.toLowerCase().replace(/[.,!?…;:—\-–"«»()'’]/g,'').replace(/[\u0300\u0301\u0306\u0308]/g,'').replace(/\s+/g,' ').trim(); }
+function lcs(a,b){
+  const m=a.length,n=b.length;
+  const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
+  for(let i=m-1;i>=0;i--) for(let j=n-1;j>=0;j--)
+    dp[i][j]= a[i]===b[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j],dp[i][j+1]);
+  const inRef=new Array(m).fill(false);
+  let i=0,j=0;
+  while(i<m&&j<n){
+    if(a[i]===b[j]){ inRef[i]=true; i++; j++; }
+    else if(dp[i+1][j]>=dp[i][j+1]) i++;
+    else j++;
+  }
+  return {inRef, len:dp[0][0]};
+}
+function checkDictate(){
+  const seg=segs[curIdx];
+  const input=document.getElementById('dictInput').value;
+  const ref=norm(seg.text), typ=norm(input);
+  if(!typ){ toast('先输入你听到的内容'); return; }
+  const {inRef,len}=lcs(ref,typ);
+  const acc = ref.length? Math.round(len/ref.length*100) : 0;
+  recordCourseScore(curIdx, acc);
+  let html=''; let miss=0;
+  for(let k=0;k<ref.length;k++){ if(inRef[k]) html+='<span class="ok">'+ref[k].replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span>'; else { html+='<span class="bad">'+ref[k].replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</span>'; miss++; } }
+  const extra = typ.length-len;
+  const res=document.getElementById('dictResult');
+  res.innerHTML='<div class="diff-out ru">'+html+'</div>'
+    +'<div class="score">正确率 '+acc+'%'+(extra>0?' · 多打了 '+extra+' 个字符':'')+(miss>0?' · 红字是漏听/听错的': ' 🎉 完全正确！')+'</div>';
+}
+
+/* =====================================================================
+   跟读（语音识别）
+===================================================================== */
+function startWholeRecite(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ toast('浏览器不支持语音识别'); return; }
+  if(recognition){ try{ recognition.stop(); }catch(e){} }
+  const out=document.getElementById('reciteResult');
+  out.innerHTML='<div class="ai-loading">🎤 整段跟读中…（视频与录音并行，请跟着读）</div>';
+  playFull();  // 播放整段，与录音并行，不暂停
+  const rec=new SR(); recognition=rec;
+  rec.lang='ru-RU'; rec.interimResults=true; rec.maxAlternatives=1;
+  rec.onresult=e=>{
+    let heard='';
+    for(let i=0;i<e.results.length;i++){ heard+=e.results[i][0].transcript; }
+    out.innerHTML='<div class="ru" style="margin-bottom:4px">🎙 你说：'+heard.replace(/</g,'&lt;')+'</div>';
+  };
+  rec.onerror=e=>{ if(e.error==='aborted') return; out.innerHTML='<div style="color:var(--danger)">识别失败：'+(e.error||'')+'。可改用「自评」按钮。</div>'; };
+  rec.onend=()=>{};
+  rec.start();
+}
+function startRecite(){
+  const seg=segs[curIdx];
+  if(!seg){ toast('没有当前句子'); return; }
+  playSeg();  // 播放本句，与录音并行，不暂停
+  doReciteOnce(seg, false);
+}
+function stopLoopRecite(){
+  if(!loopReciting) return;
+  loopReciting=false;
+  pause();
+  if(recognition){ try{ recognition.stop(); }catch(e){} }
+  const btn=document.getElementById('btnLoopRecite');
+  if(btn) btn.textContent='🔁 重读循环本句';
+}
+function toggleLoopRecite(){
+  const seg=segs[curIdx];
+  if(!seg){ toast('没有当前句子'); return; }
+  if(loopReciting){ stopLoopRecite(); toast('已停止循环跟读'); return; }
+  loopReciting=true;
+  playLoop(seg.start, seg.end);  // 循环播放本句
+  const btn=document.getElementById('btnLoopRecite');
+  if(btn) btn.textContent='⏹ 停止循环跟读';
+  doReciteOnce(seg, true);  // 同时录音，识别完自动重录，与循环播放并行
+}
+function doReciteOnce(seg, autoRestart){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ toast('浏览器不支持语音识别'); return; }
+  if(recognition){ try{ recognition.stop(); }catch(e){} }  // 停掉上一个识别，避免双重录音
+  const out=document.getElementById('reciteResult');
+  const rec=new SR(); recognition=rec;
+  rec.lang='ru-RU'; rec.interimResults=false; rec.maxAlternatives=1;
+  rec.onresult=e=>{
+    const heard=(e.results[0][0].transcript||'').trim();
+    const {inRef,len}=lcs(norm(seg.text), norm(heard));
+    const acc = norm(seg.text).length? Math.round(len/norm(seg.text).length*100):0;
+    recordCourseScore(segs.indexOf(seg), acc);
+    out.innerHTML='<div style="font-size:15px"><div class="ru" style="margin-bottom:4px">你说：'+heard.replace(/</g,'&lt;')+'</div>'
+      +'<div class="score">匹配度 '+acc+'%</div></div>';
+    toast('识别完成：匹配 '+acc+'%');
+  };
+  rec.onerror=e=>{
+    if(e.error==='aborted') return;  // 手动停止，不报错
+    if(autoRestart && loopReciting && e.error==='no-speech') return;  // 没说话，继续循环
+    out.innerHTML='<div style="color:var(--danger)">识别失败：'+(e.error||'')+'。可改用「自评」按钮。</div>';
+  };
+  rec.onend=()=>{
+    if(autoRestart && loopReciting && segs[curIdx]===seg){
+      setTimeout(()=>{ if(loopReciting && segs[curIdx]===seg) doReciteOnce(seg, true); }, 400);
+    }
+  };
+  rec.start();
+}
+function selfRate(q){
+  const out=document.getElementById('reciteResult');
+  const label = q===1?'已记录：不会':q===2?'已记录：一般':'已记录：流利 👍';
+  out.innerHTML='<div class="score" style="color:var(--accent)">'+label+'</div>';
+  toast(label);
+}
+
+/* =====================================================================
+   翻译（本句）
+===================================================================== */
+let transCache={};
+async function toggleTranslation(){
+  const tb=document.getElementById('translationBox');
+  if(!tb.classList.contains('hidden')){ tb.classList.add('hidden'); return; }
+  const seg=segs[curIdx];
+  const key=seg.text;
+  if(transCache[key]){ showTranslation(tb, transCache[key]); return; }
+  tb.classList.remove('hidden');
+  tb.innerHTML='<span class="zh-label">翻译中…</span>';
+  try{
+    const r=await fetch('/api/dict', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({word:key})});
+    const j=await r.json();
+    const t=(j.ok&&j.translation)?j.translation:'（翻译失败，可点「AI 解析」获取更好翻译）';
+    transCache[key]=t; showTranslation(tb,t);
+  }catch(e){ showTranslation(tb,'翻译失败，请确认本地服务已启动'); }
+}
+function showTranslation(tb,t){ tb.innerHTML='<div class="zh-label">中文翻译</div><div>'+t.replace(/</g,'&lt;')+'</div>'; }
+
+/* =====================================================================
+   AI 解析
+===================================================================== */
+function mdToHtml(md){
+  const esc=md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return esc
+    .replace(/^###### (.*)$/gm,'<h4>$1</h4>').replace(/^##### (.*)$/gm,'<h4>$1</h4>')
+    .replace(/^#### (.*)$/gm,'<h4>$1</h4>').replace(/^### (.*)$/gm,'<h3>$1</h3>')
+    .replace(/^## (.*)$/gm,'<h2>$1</h2>').replace(/^# (.*)$/gm,'<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/(?:^|\n)- (.*)/g,'<ul><li>$1</li></ul>')
+    .replace(/\n/g,'<br>');
+}
+async function aiExplain(){
+  const seg=segs[curIdx];
+  const s=state.settings;
+  if(!s.key){ toast('请先在「设置」里填写 API Key'); openSettings(); return; }
+  openModal('modal-ai');
+  const body=document.getElementById('aiBody');
+  body.innerHTML='<div class="ai-loading">正在请 AI 老师解析…</div>';
+  const messages=[
+    {role:'system',content:'你是专业的俄语老师。请用中文讲解用户给出的俄语句子，输出 Markdown，包含：1) 逐词释义（每个词：俄语→中文，标注词性，动词/名词给原型）2) 语法要点 3) 整句流畅中文翻译。简洁、准确、条理清晰。'},
+    {role:'user',content:'俄语句子：'+seg.text}
+  ];
+  try{
+    const r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseUrl:s.baseUrl,key:s.key,model:s.model,messages})});
+    const j=await r.json();
+    if(!j.ok){ body.innerHTML='<div style="color:var(--danger)">'+ (j.error||'出错了').replace(/</g,'&lt;') +'</div>'; return; }
+    body.innerHTML='<div class="ru" style="font-weight:600;margin-bottom:8px">'+seg.text.replace(/</g,'&lt;')+'</div>'+mdToHtml(j.content);
+  }catch(e){ body.innerHTML='<div style="color:var(--danger)">请求失败：请确认本地服务已启动且网络正常。</div>'; }
+}
+
+/* =====================================================================
+   导入材料
+===================================================================== */
+function openImport(){ resetImport(); openModal('modal-import'); }
+function resetImport(){
+  document.getElementById('impUrl').value=''; document.getElementById('impSubs').value='';
+  document.getElementById('impTitle').value=''; document.getElementById('impFile').value='';
+  document.getElementById('impType').value='youtube'; toggleImpType();
+}
+function toggleImpType(){
+  const t=document.getElementById('impType').value;
+  document.getElementById('impUrlField').classList.toggle('hidden', t!=='youtube');
+  document.getElementById('impFileField').classList.toggle('hidden', t!=='local');
+}
+async function fetchSubs(){
+  const url=document.getElementById('impUrl').value.trim();
+  if(!url){ toast('先粘贴 YouTube 链接'); return; }
+  const btn=document.getElementById('btnFetchSubs'); btn.disabled=true; btn.textContent='抓取中…（可能要十几秒）';
+  try{
+    const r=await fetch('/api/subs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    const j=await r.json();
+    if(j.ok){ document.getElementById('impSubs').value=j.text; toast('字幕抓取成功'); }
+    else { alert('抓取失败：\n\n'+(j.error||'')); }
+  }catch(e){ alert('请求失败：请确认本地服务已启动（python server.py）'); }
+  btn.disabled=false; btn.textContent='⚡ 自动抓字幕';
+}
+async function saveMaterial(){
+  const type=document.getElementById('impType').value;
+  const url=document.getElementById('impUrl').value.trim();
+  const rawText=document.getElementById('impSubs').value.trim();
+  const title=document.getElementById('impTitle').value.trim();
+  if(type==='youtube' && !url){ toast('请粘贴 YouTube 链接'); return; }
+  if(!rawText){ toast('请粘贴字幕文本'); return; }
+
+  // 先做一次规则断句，确保无论如何都有句子可用（AI 失败时的兜底）
+  const cues=parseSubtitles(rawText);
+  const fallbackSentences = cues.length ? cuesToSentences(cues) : plainToSentences(rawText);
+  // 无标点纯文本优先用 razdel
+  const ruSentences = await ruSegment(rawText);
+  const baseSentences = ruSentences || fallbackSentences;
+  if(!baseSentences.length){ toast('字幕解析失败，请检查格式'); return; }
+
+  // 尝试 AI 智能断句（在上传材料时就完成）
+  // - 有时间戳字幕时：用 cues 调用
+  // - 纯文本无时间戳时：把整段文本当一个 cue 调用，让 AI 自动断句
+  let aiResult=null;
+  if(state.settings.key){
+    const aiCues = cues.length ? cues : [{start:0, end:0, text: rawText}];
+    toast('AI 正在智能断句…');
+    try{
+      const ai=await aiSegmentFromCues(aiCues);
+      if(ai && ai.length){
+        // ai 是包含 _understanding 和 _translations 的数组对象
+        aiResult=ai;
+      }
+    }catch(e){ /* AI 失败，继续用规则断句 */ }
+  }
+
+  // AI 成功：先展示预览，等用户确认后再保存
+  if(aiResult){
+    openSegPreview(aiResult, cues, async (finalSentences)=>{
+      const m=await buildMaterialObj(type, url, rawText, finalSentences, cues.length>0);
+      if(!m) return;
+      pushMaterial(m);
+      toast('已导入 '+finalSentences.length+' 句，开始学习吧');
+    });
+    return;
+  }
+
+  // AI 未配置或失败：直接用断句保存（已在上传时完成断句）
+  const m=await buildMaterialObj(type, url, rawText, baseSentences, cues.length>0);
+  if(!m) return;
+  pushMaterial(m);
+  toast('已导入 '+baseSentences.length+' 句，开始学习吧');
+}
+
+async function buildMaterialObj(type, url, rawText, sentences, hasTimestamps){
+  const title=document.getElementById('impTitle').value.trim();
+  const m={ id:'m'+Date.now().toString(36), title:title||('材料 '+(state.materials.length+1)),
+    type, youtubeId:null, videoBlobId:null, raw: rawText, sentences, hasTimestamps, createdAt:Date.now() };
+  if(type==='youtube'){
+    const id=extractYtId(url);
+    if(!id){ toast('无法识别该 YouTube 链接'); return null; }
+    m.youtubeId=id;
+  } else {
+    const file=document.getElementById('impFile').files[0];
+    if(!file){ toast('请选择本地视频文件'); return null; }
+    m.videoBlobId='v'+Date.now().toString(36);
+    await saveVideoBlob(m.videoBlobId, file);
+  }
+  return m;
+}
+function pushMaterial(m){
+  state.materials.push(m); persist();
+  state.session={materialId:m.id,index:0,stage:'listen'}; saveLS(LS.session,state.session);
+  closeModal('modal-import');
+  revealed=false;
+  loadMaterial(m.id);
+}
+
+/* =====================================================================
+   从音频识别字幕（faster-whisper 转写）
+===================================================================== */
+let transcribedSegs = [];
+let tcUrl = '';
+function openTranscribe(){
+  document.getElementById('tcUrl').value='';
+  document.getElementById('tcTitle').value='';
+  document.getElementById('tcStatus').textContent='';
+  document.getElementById('tcPreviewField').classList.add('hidden');
+  document.getElementById('btnTcSave').classList.add('hidden');
+  const btn=document.getElementById('btnTcStart');
+  btn.disabled=false; btn.textContent='🎙 开始识别';
+  transcribedSegs=[]; tcUrl='';
+  openModal('modal-transcribe');
+}
+async function startTranscribe(){
+  const url=document.getElementById('tcUrl').value.trim();
+  if(!url){ toast('请先粘贴视频链接'); return; }
+  const btn=document.getElementById('btnTcStart');
+  const st=document.getElementById('tcStatus');
+  btn.disabled=true; btn.textContent='🎙 转写中…';
+  st.textContent='正在下载音频并识别（可能要几分钟）…';
+  try{
+    const model=state.settings.whisperModel||'small';
+    const r=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url, model})});
+    const j=await r.json();
+    if(!j.ok){ alert('识别失败：\n\n'+(j.error||'')); return; }
+    if(!j.segments || !j.segments.length){ alert('没有识别出任何句子。'); return; }
+    transcribedSegs=j.segments; tcUrl=url;
+    renderTranscribePreview();
+    document.getElementById('tcPreviewField').classList.remove('hidden');
+    document.getElementById('btnTcSave').classList.remove('hidden');
+    st.textContent='✅ 识别完成，共 '+transcribedSegs.length+' 句';
+  }catch(e){
+    alert('请求失败：请确认本地服务已启动（python server.py）');
+  }finally{
+    btn.disabled=false; btn.textContent='🎙 开始识别';
+  }
+}
+function renderTranscribePreview(){
+  const list=document.getElementById('transcribeSentList');
+  list.innerHTML=transcribedSegs.map((s,i)=>
+    '<div class="sent">'
+    +'<span class="idx">'+(i+1)+'</span>'
+    +'<span class="ru" style="flex:1">'+s.text.replace(/</g,'&lt;')+'</span>'
+    +'<span class="idx">⏱ '+s.start.toFixed(1)+'s–'+s.end.toFixed(1)+'s</span>'
+    +'</div>'
+  ).join('');
+}
+async function saveTranscribed(){
+  if(!tcUrl){ toast('请先完成识别'); return; }
+  const id=extractYtId(tcUrl);
+  if(!id){ toast('无法识别该视频链接'); return; }
+  const title=document.getElementById('tcTitle').value.trim();
+  const m={ id:'m'+Date.now().toString(36), title:title||('材料 '+(state.materials.length+1)),
+    type:'youtube', youtubeId:id, videoBlobId:null, raw:'', sentences:transcribedSegs, hasTimestamps:true, createdAt:Date.now() };
+  closeModal('modal-transcribe');
+  pushMaterial(m);
+  toast('已导入 '+transcribedSegs.length+' 句，开始学习吧');
+}
+function extractYtId(url){
+  const m=url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/);
+  return m?m[1]:null;
+}
+function loadDemo(){
+  document.getElementById('impUrl').value='https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  document.getElementById('impTitle').value='示例：俄语自我介绍';
+  document.getElementById('impSubs').value =
+'WEBVTT\n\n1\n00:00:01,000 --> 00:00:04,500\nПривет! Меня зовут Анна.\n\n2\n00:00:04,500 --> 00:00:08,000\nЯ из Москвы, это большой город.\n\n3\n00:00:08,000 --> 00:00:12,000\nЯ учу русский язык каждый день.\n\n4\n00:00:12,000 --> 00:00:16,000\nМне нравится читать книги и слушать музыку.\n\n5\n00:00:16,000 --> 00:00:20,000\nА что ты любишь делать?';
+  toast('已填入示例字幕，可直接点「保存并开始学习」');
+}
+
+/* =====================================================================
+   生词本 / 复习
+===================================================================== */
+function openSRS(){ openModal('modal-srs'); renderSRS(); }
+function renderSRS(){
+  const due=dueCards();
+  document.getElementById('srsTitle').textContent='生词本（'+state.srs.length+' 个词）';
+  const body=document.getElementById('srsBody');
+  if(!state.srs.length){ body.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px">还没有生词。学习时点单词 → 「＋ 加入生词」。</p>'; return; }
+  if(due.length){
+    const card=due[0];
+    body.innerHTML='<div class="srs-card"><div class="q"><div class="w ru">'+card.word.replace(/</g,'&lt;')+'</div>'
+      +'<div style="font-size:13px;color:var(--muted)">这个俄语词是什么意思？</div></div>'
+      +'<div class="a">—— 点击下面一个按钮评级 ——</div>'
+      +'<div class="srs-grades">'
+      +'<button class="grade g1" onclick="rateSRS(1)">忘了</button>'
+      +'<button class="grade g2" onclick="rateSRS(2)">模糊</button>'
+      +'<button class="grade g3" onclick="rateSRS(3)">记得</button>'
+      +'<button class="grade g4" onclick="rateSRS(4)">简单</button>'
+      +'</div>'
+      +'<div style="margin-top:14px"><button class="btn sm" onclick="showAnswer(\''+card.word.replace(/'/g,"\\'")+'\')">查看中文意思</button></div>'
+      +'<div class="srs-stats">今天待复习 '+due.length+' 个 · 共 '+state.srs.length+' 个</div></div>';
+  } else {
+    body.innerHTML='<div class="srs-card"><div style="font-size:34px">🎉</div><div>今天没有到期的词，都复习完啦。</div>'
+      +'<div class="srs-stats">共 '+state.srs.length+' 个生词</div></div>';
+  }
+}
+async function showAnswer(word){
+  const t=await lookupWord(word);
+  const body=document.getElementById('srsBody');
+  const q=body.querySelector('.q'); if(q) q.insertAdjacentHTML('afterend','<div style="font-size:17px;color:var(--accent);margin:6px 0">'+ (t||'未查到').replace(/</g,'&lt;') +'</div>');
+}
+function rateSRS(q){
+  const card=dueCards()[0]; if(!card) return;
+  sm2(card,q); persist(); renderSRS();
+  toast(q<3?'会加强复习这个':'继续推进');
+}
+
+/* =====================================================================
+   设置 / 备份
+===================================================================== */
+function openSettings(){
+  document.getElementById('setBase').value=state.settings.baseUrl||'';
+  document.getElementById('setKey').value=state.settings.key||'';
+  document.getElementById('setModel').value=state.settings.model||'';
+  document.getElementById('setWhisper').value=state.settings.whisperModel||'small';
+  openModal('modal-settings');
+}
+function saveSettings(){
+  state.settings={ baseUrl:document.getElementById('setBase').value.trim()||'https://api.deepseek.com',
+    key:document.getElementById('setKey').value.trim(), model:document.getElementById('setModel').value.trim()||'deepseek-chat',
+    whisperModel:document.getElementById('setWhisper').value||'small' };
+  saveLS(LS.settings, state.settings); closeModal('modal-settings'); toast('设置已保存');
+}
+function exportData(){
+  const data={materials:state.materials, srs:state.srs, settings:state.settings, dict:state.dict, session:state.session};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='俄语学习备份.json'; a.click(); URL.revokeObjectURL(a.href);
+}
+function importData(input){
+  const f=input.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=()=>{ try{
+    const d=JSON.parse(rd.result);
+    if(d.materials) state.materials=d.materials;
+    if(d.srs) state.srs=d.srs;
+    if(d.settings) state.settings=Object.assign(state.settings,d.settings);
+    if(d.dict) state.dict=d.dict;
+    if(d.session) state.session=d.session;
+    persist(); saveLS(LS.settings,state.settings); saveLS(LS.session,state.session);
+    current=null; refreshApp(); showView('home'); toast('已导入备份');
+  }catch(e){ alert('备份文件格式错误'); } };
+  rd.readAsText(f);
+}
+
+/* =====================================================================
+   弹窗 / 工具
+===================================================================== */
+function openModal(id){ document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
+document.querySelectorAll('.modal-mask').forEach(m=>{ m.addEventListener('click',e=>{ if(e.target===m) m.classList.add('hidden'); }); });
+
+/* 全局：Esc 关闭弹窗、点词 */
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ closeWordPop(); document.querySelectorAll('.modal-mask').forEach(m=>m.classList.add('hidden')); return; }
+  if(document.querySelector('.modal-mask:not(.hidden)')) return;
+  const ae=document.activeElement;
+  const typing = ae && (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA');
+  if(e.key==='ArrowRight'){ if(!typing){ e.preventDefault(); goSentence(1); } }
+  else if(e.key==='ArrowLeft'){ if(!typing){ e.preventDefault(); goSentence(-1); } }
+  else if(e.key===' '){ if(!typing && ae && ae.tagName!=='BUTTON'){ e.preventDefault(); replay(); } }
+});
+
+/* =====================================================================
+   词典工具书（OpenRussian 开源词典，CC BY-SA 4.0）
+===================================================================== */
+let _DK=null;
+function dictKeys(){ if(!_DK) _DK=Object.keys(window.RU_DICT_FULL||{}); return _DK; }
+function openDict(){
+  openModal('modal-dict');
+  const q=document.getElementById('dictQuery');
+  q.value=''; document.getElementById('dictResult').innerHTML='';
+  setTimeout(()=>q.focus(),50);
+}
+function findLemma(word){
+  const w=(word||'').toLowerCase().trim().replace(/^[«"'(]+|[»"').,;:!?…]+$/g,'');
+  if(!w) return null;
+  const F=window.RU_DICT_FULL||{}, M=window.RU_DICT||{};
+  if(F[w]||M[w]) return w;
+  const IRREG={буду:"быть",будешь:"быть",будет:"быть",будем:"быть",будете:"быть",будут:"быть",был:"быть",была:"быть",было:"быть",были:"быть"};
+  if(IRREG[w]) return IRREG[w];
+  // 软辅音词干替换（复数属格/与格/工具格/前置格 → 单数主格）
+  const SOFT={г:"з",к:"к",х:"х",ж:"ж",ш:"ш",щ:"щ",ч:"ч",ц:"ц",й:"й"};
+  const tryLemmas=(stem, les)=>{
+    for(const le of les){
+      const k=stem+le; if(F[k]||M[k]) return k;
+      // 软辅音还原：复数后缀前的软辅音在单数主格中仍是软的 → 但在词典里主格是硬辅音
+      // 如：книги→книг→книга（词典里是 книга），говорим→говор→говорить
+      // 这步已通过上述后缀替换覆盖
+    }
+    // 软辅音还原：若stem以软辅音结尾，尝试替换为对应硬辅音后再试
+    const last=stem.charAt(stem.length-1);
+    if(SOFT[last]){
+      const hard=stem.slice(0,-1)+SOFT[last];
+      for(const le of les){
+        const k=hard+le; if(F[k]||M[k]) return k;
+      }
+    }
+    return null;
+  };
+  // 规则组：长后缀优先，同组内长→短排序，避免误切
+  const rules=[
+    // 1. 复数词尾（主/属/与/宾/工具/前置格）→ 单数主格
+    [["ами","ями","ах","ях","ам","ям","ов","ев","ёв","ей","ью","ою","ею","ой","ом","ем","ём","у","ю","а","я","ы","и","е"],
+     ["","а","ый","ий","ой","ть","ить","ать","ять","еть","овать"]],
+    // 2. 形容词语尾（阳性/中性/阴性单数各格）→ 形容词原级
+    [["ая","яя","ое","ее","ые","ие","ого","его","ому","ему","ым","им","ую","юю"],
+     ["ый","ий","ой",""]],
+    // 3. 现在时词尾（-ит/-ет/-ут/-ют 等）→ 未完成体不定式
+    [["ит","ет","ут","ют","ат","ят","ишь","ешь","им","ем","ите","ете","ят","ут"],
+     ["ить","ать","ять","еть","овать","ть",""]],
+    // 4. 过去时阳/阴/中/复数（最关键：-л/-ла/-ло/-ли → -ть/-ить）
+    [["ил","ила","ило","или","л","ла","ло","ли","ться","тись","лся","лась","лось","ались","аться","ть","ти"],
+     ["ть","ить","ать","ять","еть","овать"]],
+  ];
+  for(const [sufs, les] of rules){
+    const sorted=[...sufs].sort((a,b)=>b.length-a.length);
+    for(const s of sorted){
+      if(w.endsWith(s) && w.length>s.length+1){
+        const r=tryLemmas(w.slice(0,-s.length), les);
+        if(r) return r;
+      }
+    }
+  }
+  return null;
+}
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function posLabel(e){
+  if(e.p==='n') return '名词'+(e.g?({m:'·阳',f:'·阴',n:'·中'}[e.g]||''):'');
+  if(e.p==='v') return '动词·'+(e.asp==='p'?'完成体':'未完成体');
+  if(e.p==='a') return '形容词';
+  return '代词/副词等';
+}
+function tableHtml(head, rows){
+  return '<div style="overflow-x:auto"><table class="gtable"><thead><tr>'
+    +head.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'
+    +rows.map(r=>'<tr>'+r.map(c=>'<td class="ru">'+(c||'—')+'</td>').join('')+'</tr>').join('')
+    +'</tbody></table></div>';
+}
+function nounTable(f){
+  const sg=f.sg||[], pl=f.pl||[];
+  return tableHtml(['格','单数','复数'],[
+    ['主格',sg[0],pl[0]],['属格',sg[1],pl[1]],['与格',sg[2],pl[2]],
+    ['宾格',sg[3],pl[3]],['工具格',sg[4],pl[4]],['前置格',sg[5],pl[5]]
+  ]);
+}
+function verbTable(f){
+  let html='';
+  if(f.pres && f.pres.join('')) html+=tableHtml(['人称','现在/将来时'],[
+    ['я 我',f.pres[0]],['ты 你',f.pres[1]],['он/она 他/她',f.pres[2]],
+    ['мы 我们',f.pres[3]],['вы 你们',f.pres[4]],['они 他们',f.pres[5]]
+  ]);
+  if(f.past && f.past.join('')) html+=tableHtml(['过去时','形式'],[
+    ['阳性',f.past[0]],['阴性',f.past[1]],['中性',f.past[2]],['复数',f.past[3]]
+  ]);
+  if(f.imp && (f.imp[0]||f.imp[1])) html+='<div class="gtext"><b>命令式：</b>'+(f.imp[0]||'—')+' / '+(f.imp[1]||'—')+'</div>';
+  return html;
+}
+function adjTable(f){
+  const names=['主格','属格','与格','宾格','工具格','前置格'];
+  const rows=names.map((n,i)=>[n, f.m[i], f.f[i], f.n[i], f.pl[i]]);
+  let html=tableHtml(['格','阳性','阴性','中性','复数'],rows);
+  if(f.cmp||f.sup) html+='<div class="gtext"><b>比较级：</b>'+(f.cmp||'—')+'　<b>最高级：</b>'+(f.sup||'—')+'</div>';
+  return html;
+}
+function renderDictEntry(lemma, e, note){
+  let html='<div class="dentry">';
+  html+='<div><span class="dword ru">'+esc(lemma)+'</span>';
+  if(e.s && e.s!==lemma) html+=' <span class="dstress ru">'+esc(e.s)+'</span>';
+  html+='<span class="dpos">'+posLabel(e)+'</span></div>';
+  if(note) html+='<div class="dlemma">'+note+'</div>';
+  html+='<div class="dz" id="zhslot"></div>';
+  if(e.e) html+='<div class="den">'+esc(e.e)+'</div>';
+  if(e.p==='v' && e.part) html+='<div class="dlemma">体配对：<b class="ru">'+esc(e.part)+'</b></div>';
+  if(e.p==='n' && e.f) html+=nounTable(e.f);
+  if(e.p==='v' && e.f) html+=verbTable(e.f);
+  if(e.p==='a' && e.f) html+=adjTable(e.f);
+  html+='</div>';
+  return html;
+}
+function setZh(res, t){ const el=res.querySelector('#zhslot'); if(el) el.textContent=t; }
+function entryFormsText(e){
+  if(!e.f) return '';
+  if(e.p==='n'){
+    const sg=e.f.sg||[], pl=e.f.pl||[];
+    const c=['主格','属格','与格','宾格','工具格','前置格'];
+    return '单数：'+c.map((x,i)=>x+' '+sg[i]).join('，')+'；复数：'+c.map((x,i)=>x+' '+pl[i]).join('，');
+  }
+  if(e.p==='v'){
+    let t='';
+    if(e.f.pres && e.f.pres.join('')) t+='现在/将来时：я '+e.f.pres[0]+'，ты '+e.f.pres[1]+'，он/она '+e.f.pres[2]+'，мы '+e.f.pres[3]+'，вы '+e.f.pres[4]+'，они '+e.f.pres[5]+'；';
+    if(e.f.past && e.f.past.join('')) t+='过去时：'+e.f.past[0]+'（阳）/'+e.f.past[1]+'（阴）/'+e.f.past[2]+'（中）/'+e.f.past[3]+'（复）；';
+    if(e.f.imp && (e.f.imp[0]||e.f.imp[1])) t+='命令式：'+e.f.imp[0]+'/'+e.f.imp[1];
+    return t;
+  }
+  if(e.p==='a'){
+    const c=['主格','属格','与格','宾格','工具格','前置格'];
+    return c.map((x,i)=>x+'：'+e.f.m[i]+'（阳）/'+e.f.f[i]+'（阴）/'+e.f.n[i]+'（中）/'+e.f.pl[i]+'（复）').join('；');
+  }
+  return '';
+}
+function aiBoxHtml(){
+  return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">'
+    +'<button class="btn primary sm" id="dictAiBtn">🤖 AI 助教：这是几格？为什么用这个语法？</button>'
+    +'<div id="dictAiOut" style="margin-top:10px"></div></div>';
+}
+async function dictAI(q, lemma, e){
+  const s=state.settings;
+  if(!s.key){ toast('请先在「设置」里填写 API Key'); openSettings(); return; }
+  const out=document.getElementById('dictAiOut');
+  if(!out) return;
+  out.innerHTML='<div class="ai-loading">AI 助教正在讲解…</div>';
+  let userMsg='用户查的词/形式：'+q;
+  if(lemma){
+    userMsg+='\n原形（词典词）：'+lemma;
+    if(e){ userMsg+='\n词性：'+posLabel(e); const forms=entryFormsText(e); if(forms) userMsg+='\n变格/变位表：\n'+forms; }
+  }
+  const messages=[
+    {role:'system',content:'你是专业的俄语助教，用中文讲解。用户查词典时点你，你必须按顺序回答三点：1) 这个形式是第几格（或什么时态/人称/数/性/体）2) 为什么这里要用这个格/这个语法 3) 这个语法在什么情况下可以使用。优先结合我给的变格变位表准确判断，不要臆测。用 Markdown，简洁、直接、有条理。'},
+    {role:'user',content:userMsg}
+  ];
+  try{
+    const r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseUrl:s.baseUrl,key:s.key,model:s.model,messages})});
+    const j=await r.json();
+    if(!j.ok){ out.innerHTML='<div style="color:var(--danger)">'+(j.error||'出错了').replace(/</g,'&lt;')+'</div>'; return; }
+    out.innerHTML=mdToHtml(j.content);
+  }catch(err){ out.innerHTML='<div style="color:var(--danger)">请求失败：请确认本地服务已启动且网络正常。</div>'; }
+}
+async function dictSearch(){
+  const q=document.getElementById('dictQuery').value.trim();
+  const res=document.getElementById('dictResult');
+  if(!q){ res.innerHTML=''; return; }
+  const lemma=findLemma(q);
+  if(lemma && (window.RU_DICT_FULL[lemma]||window.RU_DICT[lemma])){
+    const e=window.RU_DICT_FULL[lemma];
+    if(e){
+      const note=(q.toLowerCase().trim()!==lemma)?'← 检测到变格/变位形式，原形为「'+lemma+'」':'';
+      res.innerHTML=renderDictEntry(lemma, e, note)+aiBoxHtml();
+      const zh=window.RU_DICT[lemma]?window.RU_DICT[lemma].z:null;
+      if(zh){ setZh(res, zh); }
+      else { setZh(res,'（中文翻译中…）'); lookupWord(lemma).then(t=>{ if(t) setZh(res,t); else setZh(res,'（无中文释义）'); }); }
+      document.getElementById('dictAiBtn').addEventListener('click', ()=>dictAI(q, lemma, e));
+    } else {
+      const m=window.RU_DICT[lemma];
+      res.innerHTML='<div class="dentry"><div><span class="dword ru">'+esc(lemma)+'</span><span class="dpos">'+m.p+'</span></div><div class="dz">'+m.z+'</div></div>'+aiBoxHtml();
+      document.getElementById('dictAiBtn').addEventListener('click', ()=>dictAI(q, lemma, null));
+    }
+    return;
+  }
+  res.innerHTML='<div class="dentry"><div class="dlemma">未收录，正在联网查询…</div></div>';
+  lookupWord(q).then(t=>{
+    res.innerHTML='<div class="dentry"><div><span class="dword ru">'+esc(q)+'</span><span class="dpos">网络翻译</span></div><div class="dz">'+esc(t||'未查到')+'</div></div>'+aiBoxHtml();
+    document.getElementById('dictAiBtn').addEventListener('click', ()=>dictAI(q, null, null));
+  });
+}
+
+/* =====================================================================
+   语法工具书
+===================================================================== */
+let grammarIdx=0;
+function openGrammar(){ openModal('modal-grammar'); renderGrammar(grammarIdx); }
+function renderGrammar(i){
+  grammarIdx=i;
+  const nav=document.getElementById('grammarNav');
+  nav.innerHTML=RU_GRAMMAR.map((g,k)=>'<div class="gnav-item'+(k===i?' active':'')+'" onclick="renderGrammar('+k+')">'+g.title+'</div>').join('');
+  const g=RU_GRAMMAR[i];
+  const body=document.getElementById('grammarBody');
+  let html=g.intro?'<div class="gintro">'+g.intro+'</div>':'';
+  for(const item of g.items){
+    if(item.type==='table'){
+      html+='<div class="gitem"><div class="glabel">'+item.label+'</div><div style="overflow-x:auto"><table class="gtable"><thead><tr>'
+        +item.head.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'
+        +item.rows.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')
+        +'</tbody></table></div></div>';
+    } else if(item.type==='text'){
+      html+='<div class="gtext">'+item.html+'</div>';
+    }
+  }
+  body.innerHTML=html;
+}
+function grammarSearch(q){
+  q=(q||'').trim().toLowerCase();
+  const nav=document.getElementById('grammarNav');
+  const body=document.getElementById('grammarBody');
+  if(!q){ renderGrammar(grammarIdx); return; }
+  nav.innerHTML='';
+  const hits=[];
+  RU_GRAMMAR.forEach((g,gi)=>{
+    let ok=g.title.toLowerCase().includes(q)||(g.intro||'').toLowerCase().includes(q);
+    for(const it of g.items){
+      if(it.label && it.label.toLowerCase().includes(q)) ok=true;
+      if(it.type==='table'){
+        const all=(it.head||[]).concat((it.rows||[]).flat());
+        if(all.some(c=>String(c).toLowerCase().includes(q))) ok=true;
+      } else if(it.type==='text' && it.html.toLowerCase().includes(q)) ok=true;
+    }
+    if(ok) hits.push({gi, title:g.title});
+  });
+  if(!hits.length){ body.innerHTML='<div class="gintro">没有找到包含「'+q.replace(/</g,'&lt;')+'」的语法条目。</div>'; return; }
+  body.innerHTML='<div class="gintro">搜索「'+q.replace(/</g,'&lt;')+'」找到 '+hits.length+' 个相关章节：</div>'
+    + hits.map(h=>'<div class="gnav-item" style="border:1px solid var(--border2);padding:10px" onclick="renderGrammar('+h.gi+');document.getElementById(\'grammarSearchInput\').value=\'\'">'+h.title+'</div>').join('');
+}
+
+/* =====================================================================
+   AI 学习教练
+===================================================================== */
+let coach={lessonId:null, phase:'idle', quiz:null, answers:[], result:null};
+let lookedWords=[];
+
+function trackLooked(word){
+  word=(word||'').toLowerCase().trim().replace(/^[«"'(]+|[»"').,;:!?…]+$/g,'');
+  if(!word) return;
+  if(!lookedWords.includes(word)) lookedWords.push(word);
+}
+function resetCoach(){
+  coach={lessonId:current?current.id:null, phase:'idle', quiz:null, answers:[], result:null};
+  lookedWords=[];
+  renderCoach();
+  updateNextBtn();
+}
+function lessonText(){ return segs.map(s=>s.text).join('\n'); }
+
+async function callAI(messages){
+  const s=state.settings;
+  const r=await fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baseUrl:s.baseUrl,key:s.key,model:s.model,messages})});
+  const j=await r.json();
+  if(!j.ok) throw new Error(j.error||'AI 接口错误');
+  return j.content;
+}
+function parseAIJSON(content){
+  let t=(content||'').trim();
+  t=t.replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
+  const a=t.indexOf('{'), b=t.lastIndexOf('}');
+  if(a>=0 && b>a) t=t.slice(a,b+1);
+  try{ return JSON.parse(t); }catch(e){ return null; }
+}
+
+function renderCoach(){
+  const body=document.getElementById('coachBody');
+  if(!body) return;
+  if(coach.phase==='idle'){
+    body.innerHTML='<p class="hint" style="margin:0 0 10px">完成本篇「听→听写→跟读」后做一次检测，检验是否真正掌握。已记录你本次查过的 '+lookedWords.length+' 个生词。</p>'
+      +'<button class="btn primary" onclick="startCoach()">🚀 开始本篇学习检测</button>';
+  } else if(coach.phase==='loading'){
+    body.innerHTML='<div class="ai-loading">AI 教练正在根据课文和你的生词出题…</div>';
+  } else if(coach.phase==='grading'){
+    body.innerHTML='<div class="ai-loading">AI 教练正在批改你的作答…</div>';
+  } else if(coach.phase==='quiz'){
+    const qs=(coach.quiz&&coach.quiz.questions)||[];
+    body.innerHTML=qs.map((q,i)=>{
+      let input='';
+      if(q.type==='choice'){
+        input='<div class="qopts">'+(q.options||[]).map((o,j)=>'<label class="qopt"><input type="radio" name="q'+i+'" value="'+j+'"><span>'+esc(o)+'</span></label>').join('')+'</div>';
+      } else {
+        input='<input type="text" class="qfill ru" id="qf'+i+'" placeholder="用俄语作答">';
+      }
+      return '<div class="qcard"><div class="qnum">第 '+(i+1)+' 题 · '+(q.type==='choice'?'选择':'填空/翻译')+'</div><div class="qtxt">'+esc(q.question)+'</div>'+input+'</div>';
+    }).join('')
+      +'<div class="row" style="margin-top:12px"><button class="btn primary" onclick="submitCoach()">📝 提交作答</button><button class="btn" onclick="resetCoach()">重新检测</button></div>';
+  } else if(coach.phase==='report'){
+    body.innerHTML=renderReportHTML(coach.result);
+  }
+}
+
+function renderReportHTML(r){
+  if(!r) return '';
+  const levelMap={pass:['✅ 通过','#16a34a'],review:['⚠️ 需复习','#d97706'],fail:['❌ 未通过','#e11d48']};
+  const lm=levelMap[r.assessment_level]||['未知','#6b7280'];
+  let html='<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+    +'<span class="level-badge" style="background:'+lm[1]+'">'+lm[0]+'</span>'
+    +'<span class="score-big">'+(r.score!=null?r.score:'—')+' 分</span></div>';
+  html+='<div class="rep-sec"><b>🎯 必须掌握：</b>';
+  html+=(r.must_master&&r.must_master.length)?r.must_master.map(x=>'<span class="chip ru">'+esc(x)+'</span>').join(''):'<span class="hint">无</span>';
+  html+='</div>';
+  html+='<div class="rep-sec"><b>⚠️ 薄弱语法点：</b><ul class="rep-ul">'+((r.weak_grammar&&r.weak_grammar.length)?r.weak_grammar.map(x=>'<li>'+esc(x)+'</li>').join(''):'<li>无</li>')+'</ul></div>';
+  html+='<div class="rep-sec"><b>📚 俄语学习建议：</b><ul class="rep-ul">'+((r.suggestions&&r.suggestions.length)?r.suggestions.map(x=>'<li>'+esc(x)+'</li>').join(''):'<li>—</li>')+'</ul></div>';
+  html+='<div class="row" style="margin-top:12px"><button class="btn" onclick="resetCoach()">🔄 重新检测</button>';
+  if(r.assessment_level==='pass') html+='<button class="btn primary" onclick="goNextMaterial()">进入下一篇 →</button>';
+  else html+='<span class="hint" style="margin:0;align-self:center">⛔ 未通过检测，请复习本篇并重新检测后再进入下一篇</span>';
+  html+='</div>';
+  return html;
+}
+
+async function startCoach(){
+  if(!segs.length){ toast('当前没有课文内容'); return; }
+  const s=state.settings;
+  if(!s.key){ toast('请先在「设置」里填写 API Key'); openSettings(); return; }
+  coach.phase='loading'; renderCoach();
+  try{
+    const text=lessonText();
+    const words=lookedWords.length?lookedWords.join('、'):'（本次未点击查询生词）';
+    const messages=[
+      {role:'system',content:'你是俄语学习教练。根据课文和学生的生词出一份检测题，检验学生是否真正掌握这篇课文。题目要覆盖：生词含义、关键语法（格/动词变位/体）、句子理解。严格只输出 JSON，不要任何解释。JSON 格式：{"questions":[{"type":"choice","question":"题目（中文，可含俄语）","options":["选项A","选项B","选项C","选项D"],"answer":"正确选项的完整内容"},{"type":"fill","question":"填空或翻译题（中文提示）","answer":"参考答案（俄语）"}]}。共 12-15 题，覆盖尽量多的知识点（生词、变格、变位、体、句子理解），难度适中偏难。'},
+      {role:'user',content:'课文全文：\n'+text+'\n\n学生本次查过的生词：'+words}
+    ];
+    const content=await callAI(messages);
+    const quiz=parseAIJSON(content);
+    if(!quiz || !quiz.questions || !quiz.questions.length){ coach.phase='idle'; renderCoach(); toast('出题失败，请重试'); return; }
+    coach.quiz=quiz; coach.phase='quiz'; renderCoach();
+  }catch(err){ coach.phase='idle'; renderCoach(); toast('出题失败：'+(err.message||err)); }
+}
+
+async function submitCoach(){
+  const qs=(coach.quiz&&coach.quiz.questions)||[];
+  const answers=qs.map((q,i)=>{
+    if(q.type==='choice'){
+      const sel=document.querySelector('input[name="q'+i+'"]:checked');
+      if(!sel) return '（未作答）';
+      return q.options[parseInt(sel.value)]||'';
+    }
+    return (document.getElementById('qf'+i).value||'').trim()||'（未作答）';
+  });
+  coach.answers=answers;
+  coach.phase='grading'; renderCoach();
+  try{
+    const messages=[
+      {role:'system',content:'你是俄语学习教练。批改学生的作答，给出科学评估报告。严格只输出 JSON，不要任何解释。JSON 格式：{"assessment_level":"pass 或 review 或 fail","score":0到100的整数,"must_master":["必须掌握的生词/短语"],"weak_grammar":["薄弱语法点"],"suggestions":["具体的俄语学习建议"]}。assessment_level 判断标准（务必非常严格，宁严勿松，不要轻易给 pass）：正确率>=90% 且无任何语法/变格/变位错误=pass；60%-89% 或有一处以上错误=review；<60% 或存在严重错误=fail。'},
+      {role:'user',content:'题目：'+JSON.stringify(qs)+'\n\n学生作答（与题目顺序一一对应）：'+JSON.stringify(answers)}
+    ];
+    const content=await callAI(messages);
+    const result=parseAIJSON(content);
+    if(!result){ coach.phase='quiz'; renderCoach(); toast('批改失败，请重试'); return; }
+    coach.result=result; coach.phase='report'; renderCoach(); updateNextBtn();
+  }catch(err){ coach.phase='quiz'; renderCoach(); toast('批改失败：'+(err.message||err)); }
+}
+
+function updateNextBtn(){
+  const btn=document.getElementById('nextMatBtn');
+  if(!btn) return;
+  const locked = coach.result && coach.result.assessment_level!=='pass';
+  btn.disabled = locked;
+  btn.title = locked ? '检测未通过，请复习本篇并重新检测' : '已通过检测，进入下一篇';
+  btn.style.opacity = locked ? '.45' : '';
+}
+function goNextMaterial(){
+  if(!current) return;
+  const idx=state.materials.findIndex(m=>m.id===current.id);
+  if(idx<0 || idx>=state.materials.length-1){ toast('已经是最后一篇了'); return; }
+  loadMaterial(state.materials[idx+1].id);
+}
+
+/* =====================================================================
+   启动
+===================================================================== */
+refreshApp();
+showView('home');
+</script>
+</body>
+</html>

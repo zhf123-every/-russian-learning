@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.superpowers/
+*.log
+api_calls.log
+dict-full.js
+dict-full.js.gz
