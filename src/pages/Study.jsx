@@ -25,9 +25,11 @@ export default function Study() {
 
   const [playingIdx, setPlayingIdx] = useState(-1)
   const [aiHtml, setAiHtml] = useState('')
+  const [showZh, setShowZh] = useState(false)
 
   useEffect(() => {
     if (!video) { navigate('/'); return }
+    setAiHtml('')
     open(videoId)
     pushRecent(videoId)
     const saved = progress?.lastIndex
@@ -43,6 +45,7 @@ export default function Study() {
   const cur = sentences[curIdx]
 
   const go = (d) => {
+    setAiHtml('')
     const n = curIdx + d
     if (n < 0 || n >= sentences.length) return
     setIdx(n)
@@ -82,12 +85,14 @@ export default function Study() {
           </div>
 
           <div style={{ marginTop: 12 }}><SentenceBox sentence={cur} revealed={revealed} /></div>
+          {showZh && <div className="translation"><div className="zh-label">中文翻译</div><div>{cur.chinese}</div></div>}
           {aiHtml && <div className="translation" dangerouslySetInnerHTML={{ __html: aiHtml }} />}
 
           <div style={{ marginTop: 12 }}>{stageEl}</div>
 
           <div className="row" style={{ marginTop: 14 }}>
             <button className="btn sm" onClick={toggleRevealed}>{revealed ? '隐藏原文' : '显示原文'}</button>
+            <button className="btn sm" onClick={() => setShowZh(v => !v)}>{showZh ? '隐藏中译' : '中译'}</button>
             <button className="btn sm" onClick={runAI}>🤖 AI 解析</button>
           </div>
 

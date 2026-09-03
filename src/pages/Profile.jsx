@@ -13,14 +13,21 @@ export default function Profile() {
   for (const p of Object.values(progress)) practiced += Object.keys(p.sentenceScores || {}).length
 
   const days = new Set(Object.values(progress).map(p => new Date(p.updatedAt).toDateString()))
-  const streak = days.size
+  const sortedDays = [...days].map(d => new Date(d)).sort((a, b) => a - b)
+  let streak = 0
+  for (let i = sortedDays.length - 1; i >= 0; i--) {
+    if (i === sortedDays.length - 1) { streak = 1; continue }
+    const gap = Math.round((sortedDays[i + 1] - sortedDays[i]) / 86400000)
+    if (gap === 1) streak++
+    else break
+  }
 
   return (
     <div className="course">
       <h2>📊 学习统计</h2>
       <div className="videos-grid" style={{ gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', marginBottom: 20 }}>
         <div className="card"><div className="score-big">{days.size}</div><div className="hint">学习天数</div></div>
-        <div className="card"><div className="score-big">{streak}</div><div className="hint">连续打卡（去重日）</div></div>
+        <div className="card"><div className="score-big">{streak}</div><div className="hint">连续打卡</div></div>
         <div className="card"><div className="score-big">{practiced}</div><div className="hint">练习句子数</div></div>
         <div className="card"><div className="score-big">{doneVideos}</div><div className="hint">完成视频数</div></div>
         <div className="card"><div className="score-big">{cards.length}</div><div className="hint">生词总数</div></div>

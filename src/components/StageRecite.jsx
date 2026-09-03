@@ -29,6 +29,7 @@ export default function StageRecite({ sentence, onScore }) {
       onScore(score)
     }
     rec.onend = () => setListening(false)
+    rec.onerror = () => { toast('麦克风不可用或权限被拒绝'); setListening(false) }
     setListening(true)
     rec.start()
   }

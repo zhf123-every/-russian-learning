@@ -235,6 +235,8 @@ button{font-family:inherit;cursor:pointer}
 .video-card{background:var(--card);border:1px solid var(--border2);border-radius:14px;overflow:hidden;transition:box-shadow .15s,transform .15s;cursor:pointer}
 .video-card:hover{box-shadow:var(--shadow);transform:translateY(-3px)}
 .vc-locked{opacity:.6}
+.vc-locked .video-card{cursor:not-allowed}
+.vc-locked .video-card:hover{transform:none;box-shadow:none}
 .thumb{aspect-ratio:10/7;background-size:cover;background-position:center;position:relative}
 .thumb-score{position:absolute;top:8px;right:8px;background:var(--accent);color:#fff;padding:2px 8px;border-radius:8px;font-size:12px}
 .thumb-lock{position:absolute;top:8px;left:8px;font-size:20px}
