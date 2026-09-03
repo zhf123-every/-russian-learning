@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { LEVELS, getLevelVideos } from '../data/courseLibrary'
 import { useCourseStore } from '../store/courseStore'
 import VideoCard from '../components/VideoCard'
+import AddMaterialModal from '../components/AddMaterialModal'
 
 export default function Home() {
   const [level, setLevel] = useState('A1')
   const [tag, setTag] = useState('')
   const [q, setQ] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
   const recent = useCourseStore(s => s.recent)
   const getVideo = useCourseStore(s => s.getVideo)
   const levelMastery = useCourseStore(s => s.levelMastery)
@@ -23,6 +25,10 @@ export default function Home() {
 
   return (
     <div className="course">
+      <div className="row" style={{ marginBottom: 16 }}>
+        <button className="btn primary" onClick={() => setShowAdd(true)}>＋ 添加资料</button>
+      </div>
+
       <div className="course-levels">
         {LEVELS.map(l => (
           <button key={l} className={'btn sm' + (l === level ? ' primary' : '')}
@@ -55,6 +61,7 @@ export default function Home() {
         {videos.map(({ video }, i) => <VideoCard key={video.id} video={video} level={level} idx={i} />)}
       </div>
       {videos.length === 0 && <div className="course-empty">没有匹配的视频</div>}
+      {showAdd && <AddMaterialModal onClose={() => setShowAdd(false)} />}
     </div>
   )
 }
