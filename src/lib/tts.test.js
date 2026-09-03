@@ -48,4 +48,19 @@ describe('tts', () => {
     cancelSpeech()
     expect(m.cancel).toHaveBeenCalled()
   })
+
+  it('loopSentence repeats sentence i times times', async () => {
+    const m = mockTTS()
+    const { loopSentence } = await import('./tts')
+    const idx = []
+    const done = vi.fn()
+    loopSentence([{ russian: 'a' }], 0, 3, { onIndex: i => idx.push(i), onDone: done })
+    expect(idx).toEqual([0])
+    m.fireEnd()
+    expect(idx).toEqual([0, 0])
+    m.fireEnd()
+    expect(idx).toEqual([0, 0, 0])
+    m.fireEnd()
+    expect(done).toHaveBeenCalledTimes(1)
+  })
 })
