@@ -7,6 +7,10 @@ import SentenceBox from '../components/SentenceBox'
 import StageListen from '../components/StageListen'
 import StageDictate from '../components/StageDictate'
 import StageRecite from '../components/StageRecite'
+import { useSettingsStore } from '../store/settingsStore'
+import { explainSentence } from '../lib/ai'
+import { toast } from '../lib/toast'
+import { mdToHtml } from '../lib/md'
 
 export default function Study() {
   const { videoId } = useParams()
@@ -20,6 +24,7 @@ export default function Study() {
   const open = useSessionStore(s => s.open)
 
   const [playingIdx, setPlayingIdx] = useState(-1)
+  const [aiHtml, setAiHtml] = useState('')
 
   useEffect(() => {
     if (!video) { navigate('/'); return }
@@ -41,6 +46,13 @@ export default function Study() {
     const n = curIdx + d
     if (n < 0 || n >= sentences.length) return
     setIdx(n)
+  }
+
+  const runAI = async () => {
+    const { settings } = useSettingsStore.getState()
+    setAiHtml('解析中…')
+    try { setAiHtml(mdToHtml(await explainSentence(cur.russian, settings))) }
+    catch (e) { setAiHtml(''); toast(e.message) }
   }
 
   const stageEl = stage === 'listen' ? <StageListen sentences={sentences} curIdx={curIdx} onSetPlaying={setPlayingIdx} />
@@ -70,12 +82,13 @@ export default function Study() {
           </div>
 
           <div style={{ marginTop: 12 }}><SentenceBox sentence={cur} revealed={revealed} /></div>
-          <div className="translation hidden" id="translationBox"></div>
+          {aiHtml && <div className="translation" dangerouslySetInnerHTML={{ __html: aiHtml }} />}
 
           <div style={{ marginTop: 12 }}>{stageEl}</div>
 
           <div className="row" style={{ marginTop: 14 }}>
             <button className="btn sm" onClick={toggleRevealed}>{revealed ? '隐藏原文' : '显示原文'}</button>
+            <button className="btn sm" onClick={runAI}>🤖 AI 解析</button>
           </div>
 
           <div className="nav-arrows">
