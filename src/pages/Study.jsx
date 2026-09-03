@@ -25,8 +25,11 @@ export default function Study() {
     if (!video) { navigate('/'); return }
     open(videoId)
     pushRecent(videoId)
-    const saved = progress?.lastIndex ?? 0
-    setIdx(Math.min(saved, video.sentences.length - 1))
+    const saved = progress?.lastIndex
+    if (saved != null) {
+      const i = video.sentences.findIndex(s => s.id === saved)
+      if (i >= 0) setIdx(i)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId])
 
