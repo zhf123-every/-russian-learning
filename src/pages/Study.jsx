@@ -73,7 +73,16 @@ export default function Study() {
       <div className="col">
         <div className="card" style={{ padding: 10 }}>
           <div className="video-wrap">
-            <img src={video.posterUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+            {video.videoUrl ? (
+              <video
+                src={`/api/stream?url=${encodeURIComponent(video.videoUrl)}`}
+                poster={video.posterUrl || video.thumbnail}
+                controls
+                playsInline
+              />
+            ) : (
+              <img src={video.posterUrl || video.thumbnail} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+            )}
           </div>
         </div>
         <div className="card">

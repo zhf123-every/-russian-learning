@@ -30,9 +30,30 @@ export default function ContributeModal({ onClose, onSubmit }) {
       const id = 'square_' + Date.now()
       const author = '匿名用户'
       const thumbnail = `https://picsum.photos/seed/${id}/400/280`
-      const sentences = [] // 从视频抓取字幕（后续实现）
+      const posterUrl = `https://picsum.photos/seed/${id}/1280/720`
       const views = 0
       const createdAt = Date.now()
+
+      // 从视频链接抓取字幕并断句
+      let sentences = []
+      let fetchError = ''
+      try {
+        const r = await fetch('/api/subs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: form.videoUrl })
+        })
+        const j = await r.json()
+        if (j.ok && j.text) {
+          const { parseTextToSentences } = await import('../lib/srt')
+          const { sentences: parsed } = parseTextToSentences(j.text)
+          sentences = parsed.map((s, i) => ({ id: i + 1, russian: s.text, chinese: '' }))
+        } else {
+          fetchError = j.error || '未知错误'
+        }
+      } catch (e) {
+        fetchError = e.message
+      }
 
       const payload = {
         id,
@@ -42,6 +63,7 @@ export default function ContributeModal({ onClose, onSubmit }) {
         videoUrl: form.videoUrl,
         description: form.description,
         thumbnail,
+        posterUrl,
         sentences,
         author,
         views,
@@ -50,7 +72,7 @@ export default function ContributeModal({ onClose, onSubmit }) {
       }
 
       await onSubmit(payload)
-      toast('投稿成功！内容将在审核后上线')
+      toast(fetchError ? '已投稿，但字幕抓取失败：' + fetchError : '投稿成功！')
       onClose()
       navigate('/square')
     } catch (e) {
