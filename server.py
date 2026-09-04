@@ -35,6 +35,11 @@ PORT = int(os.environ.get("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, "dist")
 
+# AI 中转配置（密钥/地址从环境变量读取，前端不再持有密钥）
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
+AI_API_KEY = os.environ.get("AI_API_KEY", "")
+AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
+
 
 def http_call(method, url, payload=None, headers=None, timeout=40):
     """返回 (status_code, body_str)。网络异常时返回 (0, 错误信息)。"""
@@ -532,13 +537,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": "缺少 word"})
                 t = dict_lookup(word)
                 return self._json(200, {"ok": True, "translation": t})
+            if path == "/api/grammar":
+                sentence = (data.get("sentence") or data.get("text") or "").strip()
+                if not sentence:
+                    return self._json(400, {"ok": False, "error": "缺少句子"})
+                if not AI_API_KEY:
+                    return self._json(400, {"ok": False, "error": "未配置 AI API Key（请在 Render 环境变量 AI_API_KEY 中设置）"})
+                messages = [
+                    {"role": "system", "content": "你是俄语老师。逐词解析这句俄语：原形、词性、语法功能、整句中文翻译。用简洁中文，适当用列表。"},
+                    {"role": "user", "content": sentence},
+                ]
+                content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+                return self._json(200, {"ok": True, "content": content})
             if path == "/api/ai":
-                base = (data.get("baseUrl") or "https://api.deepseek.com").strip()
-                key = (data.get("key") or "").strip()
-                model = (data.get("model") or "deepseek-chat").strip()
+                base = (data.get("baseUrl") or AI_BASE_URL).strip()
+                key = (data.get("key") or AI_API_KEY).strip()
+                model = (data.get("model") or AI_MODEL).strip()
                 messages = data.get("messages") or []
                 if not key:
-                    return self._json(400, {"ok": False, "error": "未配置 API Key，请先在「设置」里填写"})
+                    return self._json(400, {"ok": False, "error": "未配置 AI API Key（请在 Render 环境变量 AI_API_KEY 中设置）"})
                 content = ai_chat(base, key, model, messages)
                 return self._json(200, {"ok": True, "content": content})
             return self._json(404, {"ok": False, "error": "未知接口"})

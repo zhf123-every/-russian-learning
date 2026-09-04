@@ -8,7 +8,6 @@ import SentenceBox from '../components/SentenceBox'
 import StageListen from '../components/StageListen'
 import StageDictate from '../components/StageDictate'
 import StageRecite from '../components/StageRecite'
-import { useSettingsStore } from '../store/settingsStore'
 import { explainSentence } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { mdToHtml } from '../lib/md'
@@ -60,9 +59,8 @@ export default function Study() {
   }
 
   const runAI = async () => {
-    const { settings } = useSettingsStore.getState()
     setAiHtml('解析中…')
-    try { setAiHtml(mdToHtml(await explainSentence(cur.russian, settings))) }
+    try { setAiHtml(mdToHtml(await explainSentence(cur.russian))) }
     catch (e) { setAiHtml(''); toast(e.message) }
   }
 

@@ -33,7 +33,7 @@ export default function SettingsModal({ onClose }) {
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h2>设置</h2>
-        <p className="hint">「AI 解析」需配置 OpenAI 兼容接口（DeepSeek / 通义 / 智谱等）。</p>
+        <p className="hint">「语法解释 / AI 解析」由服务端密钥统一调用（部署时在环境变量配置）。下方「API Key」仅用于本地「AI 断句」。</p>
         <div className="field"><label>接口地址 baseUrl</label><input value={s.baseUrl} onChange={e => set('baseUrl', e.target.value)} /></div>
         <div className="field"><label>API Key</label><input type="password" value={s.apiKey} onChange={e => set('apiKey', e.target.value)} placeholder="sk-..." /></div>
         <div className="field"><label>模型名</label><input value={s.model} onChange={e => set('model', e.target.value)} /></div>

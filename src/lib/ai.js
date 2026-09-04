@@ -1,19 +1,16 @@
-export async function chat({ baseUrl, apiKey, model, messages }) {
-  if (!apiKey) throw new Error('未配置 API Key，请在设置里填写')
-  const res = await fetch((baseUrl.replace(/\/$/, '') + '/chat/completions'), {
+// 通用 AI 中转：由后端持有密钥，前端不再直接调用第三方 AI 接口
+export async function chat({ messages } = {}) {
+  const r = await fetch('/api/ai', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({ model, messages, temperature: 0.3 }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
   })
-  if (!res.ok) {
-    const t = await res.text().catch(() => '')
-    throw new Error('请求失败 ' + res.status + (t ? ': ' + t.slice(0, 200) : ''))
-  }
-  const j = await res.json()
-  return j.choices?.[0]?.message?.content || ''
+  const j = await r.json()
+  if (!j.ok) throw new Error(j.error || 'AI 接口错误')
+  return j.content
 }
 
-// 调用后端 /api/ai（统一 AI 入口，由后端转发到实际模型）
+// 调用后端 /api/ai（统一 AI 入口，密钥在服务端环境变量中）
 export async function callAI(messages) {
   const r = await fetch('/api/ai', {
     method: 'POST',
@@ -40,12 +37,14 @@ export function parseAIJSON(content) {
   }
 }
 
-export async function explainSentence(text, settings) {
-  return chat({
-    ...settings,
-    messages: [
-      { role: 'system', content: '你是俄语老师。逐词解析这句俄语：原形、词性、语法功能、整句中文翻译。用简洁中文，适当用列表。' },
-      { role: 'user', content: text },
-    ],
+// 语法解释：调用后端 /api/grammar（服务端持有密钥）
+export async function explainSentence(text) {
+  const r = await fetch('/api/grammar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentence: text }),
   })
+  const j = await r.json()
+  if (!j.ok) throw new Error(j.error || '语法解析失败')
+  return j.content
 }

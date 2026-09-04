@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useSettingsStore } from '../store/settingsStore'
 import { useVocabStore } from '../store/vocabStore'
-import { chat } from '../lib/ai'
+import { explainSentence } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { courseLibrary, LEVELS } from '../data/courseLibrary'
 
@@ -11,7 +10,6 @@ const LEVEL_COLORS = { A1: '#0d9488', A2: '#2563eb', B1: '#d97706', B2: '#e11d48
 export default function ShangMethod() {
   const { level } = useParams()
   const navigate = useNavigate()
-  const settings = useSettingsStore(s => s.settings)
   const addWord = useVocabStore(s => s.addWord)
 
   const [selectedLevel, setSelectedLevel] = useState(level || 'A1')
@@ -120,18 +118,11 @@ export default function ShangMethod() {
   // 语法解释
   const explainGrammar = async () => {
     if (!currentSentence) return
-    if (!settings.apiKey) { toast('请先在设置中填写 API Key'); return }
     setMode('grammar')
     setGrammarLoading(true)
     setGrammar(null)
     try {
-      const res = await chat({
-        ...settings,
-        messages: [
-          { role: 'system', content: '你是俄语老师。逐词解析这句俄语：原形、词性、语法功能、整句中文翻译。用简洁中文，适当用列表。' },
-          { role: 'user', content: currentSentence.russian }
-        ]
-      })
+      const res = await explainSentence(currentSentence.russian)
       setGrammar(res)
     } catch (e) {
       toast('AI 解析失败：' + e.message)
