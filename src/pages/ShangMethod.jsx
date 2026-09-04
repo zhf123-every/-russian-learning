@@ -5,7 +5,7 @@ import { explainSentence } from '../lib/ai'
 import { toast } from '../lib/toast'
 import { courseLibrary, LEVELS } from '../data/courseLibrary'
 
-const LEVEL_COLORS = { A1: '#9E7867', A2: '#A8907B', B1: '#B08A5A', B2: '#A85443' }
+const LEVEL_COLORS = { A1: '#8B735F', A2: '#A8937F', B1: '#B08A5A', B2: '#A86454' }
 
 export default function ShangMethod() {
   const { level } = useParams()
