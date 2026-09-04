@@ -1,12 +1,18 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSquareStore } from '../store/squareStore'
 import { SQUARE_CATEGORIES } from '../data/squareLibrary'
+import ContributeModal from '../components/ContributeModal'
 
 export default function SquarePage() {
   const navigate = useNavigate()
   const items = useSquareStore(s => s.items())
+  const submitItem = useSquareStore(s => s.submitItem)
+  const fetchServer = useSquareStore(s => s.fetchServer)
   const [selectedCategory, setSelectedCategory] = useState('all')
+  const [showContribute, setShowContribute] = useState(false)
+
+  useEffect(() => { fetchServer() }, [fetchServer])
 
   const filtered = selectedCategory === 'all'
     ? items
@@ -17,6 +23,7 @@ export default function SquarePage() {
       <div className="square-head">
         <button className="btn sm" onClick={() => navigate('/course')}>← 返回分级课程</button>
         <h2>学习广场</h2>
+        <button className="btn primary" onClick={() => setShowContribute(true)}>＋ 上传素材</button>
       </div>
 
       <div className="square-cats">
@@ -39,7 +46,10 @@ export default function SquarePage() {
         <div className="empty">
           <div className="big">🛍️</div>
           <h1>这个分类还没有素材</h1>
-          <p>敬请期待更多内容</p>
+          <p>快来上传第一个吧！</p>
+          <div className="cta">
+            <button className="btn primary" onClick={() => setShowContribute(true)}>＋ 上传素材</button>
+          </div>
         </div>
       ) : (
         <div className="videos-grid">
@@ -56,6 +66,13 @@ export default function SquarePage() {
             </div>
           ))}
         </div>
+      )}
+
+      {showContribute && (
+        <ContributeModal
+          onClose={() => setShowContribute(false)}
+          onSubmit={(data) => submitItem(data)}
+        />
       )}
     </div>
   )
