@@ -19,6 +19,6 @@ pause
 exit /b 1
 
 :run
-echo Starting ...
+echo Starting legacy app at http://localhost:8000 ...
 %PY% server.py
 pause

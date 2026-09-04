@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
-import Home from './pages/Home'
+import HomePage from './pages/HomePage'
+import CoursePage from './pages/CoursePage'
+import CustomMaterials from './pages/CustomMaterials'
+import ShangMethod from './pages/ShangMethod'
+import SquarePage from './pages/SquarePage'
 import Study from './pages/Study'
 import Vocab from './pages/Vocab'
 import Profile from './pages/Profile'
@@ -20,7 +24,13 @@ export default function App() {
         <button className="tbtn" onClick={() => setShowSettings(true)}>设置</button>
       </div>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/course" element={<CoursePage />} />
+        <Route path="/custom" element={<CustomMaterials />} />
+        <Route path="/method" element={<ShangMethod />} />
+        <Route path="/method/:level" element={<ShangMethod />} />
+        <Route path="/square" element={<SquarePage />} />
+        <Route path="/square/:id" element={<Study />} />
         <Route path="/study/:videoId" element={<Study />} />
         <Route path="/vocab" element={<Vocab />} />
         <Route path="/profile" element={<Profile />} />

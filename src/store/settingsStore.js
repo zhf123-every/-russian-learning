@@ -5,6 +5,7 @@ const defaults = {
   baseUrl: 'https://api.deepseek.com',
   apiKey: '',
   model: 'deepseek-chat',
+  whisperModel: 'small',
   voiceURI: '',
   rate: 1.0,
   loopTimes: 3,

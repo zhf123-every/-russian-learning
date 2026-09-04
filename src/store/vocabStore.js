@@ -21,6 +21,23 @@ export const useVocabStore = create((set, get) => ({
     set({ cards })
   },
 
+  add({ id, word, chinese, reading, pos, addedAt, source } = {}) {
+    const card = {
+      id: id || 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      word: word || '',
+      lemma: (word || '').replace(/[́̀̆̈]/g, ''),
+      chinese: chinese || '',
+      reading: reading || '',
+      pos: pos || '',
+      source: source || 'manual',
+      fsrs: newCard(),
+      createdAt: addedAt || Date.now(),
+    }
+    const cards = [card, ...get().cards]
+    saveLS(LS.vocab, cards.map(c => ({ ...c, fsrs: serializeCard(c.fsrs) })))
+    set({ cards })
+  },
+
   review(cardId, rating) {
     set(s => {
       const cards = s.cards.map(c => c.id === cardId ? { ...c, fsrs: review(c.fsrs, rating) } : c)

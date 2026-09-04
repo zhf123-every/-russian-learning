@@ -31,8 +31,9 @@ from datetime import datetime
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT = 8000
+PORT = int(os.environ.get("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DIST_DIR = os.path.join(BASE_DIR, "dist")
 
 
 def http_call(method, url, payload=None, headers=None, timeout=40):
@@ -470,15 +471,25 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/stream":
             return self._handle_stream()
+
+        # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
+        serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
         if path == "/":
-            path = "/index.html"
-        name = path.lstrip("/")
-        full = os.path.normpath(os.path.join(BASE_DIR, name))
-        if not (full.startswith(BASE_DIR) and os.path.isfile(full)):
-            self.send_response(404)
-            self._cors()
-            self.end_headers()
-            return
+            path = "/index.html" if os.path.isfile(os.path.join(serve_dir, "index.html")) else "/legacy.html"
+
+        rel = path.lstrip("/")
+        full = os.path.normpath(os.path.join(serve_dir, rel))
+        if not (full.startswith(serve_dir) and os.path.isfile(full)):
+            # 单页应用路由回退：无扩展名的路径（如 /method/A1）返回 index.html
+            fallback = os.path.join(serve_dir, "index.html")
+            if not os.path.splitext(rel)[1] and os.path.isfile(fallback):
+                full = fallback
+            else:
+                self.send_response(404)
+                self._cors()
+                self.end_headers()
+                return
+
         ext = os.path.splitext(full)[1].lower()
         ctype = {
             ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -539,21 +550,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    host = os.environ.get("HOST", "0.0.0.0")
     port = PORT
     srv = None
     while port < PORT + 50:
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            srv = ThreadingHTTPServer((host, port), Handler)
             break
         except OSError:
             port += 1
     url = "http://localhost:%d" % port
     print("=" * 48)
     print("  看视频学俄语")
-    print("  浏览器将自动打开：" + url)
+    print("  服务地址：" + url)
     print("  （按 Ctrl+C 退出）")
     print("=" * 48)
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    if os.environ.get("NO_BROWSER") != "1":
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

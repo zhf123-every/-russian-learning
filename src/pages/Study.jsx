@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useCourseStore } from '../store/courseStore'
+import { useSquareStore } from '../store/squareStore'
 import { useSessionStore } from '../store/sessionStore'
 import SentenceList from '../components/SentenceList'
 import SentenceBox from '../components/SentenceBox'
@@ -15,7 +16,9 @@ import { mdToHtml } from '../lib/md'
 export default function Study() {
   const { videoId } = useParams()
   const navigate = useNavigate()
-  const video = useCourseStore(s => s.getVideo(videoId))
+  const courseVideo = useCourseStore(s => s.getVideo(videoId))
+  const squareVideo = useSquareStore(s => s.getItem(videoId))
+  const video = courseVideo || squareVideo
   const pushRecent = useCourseStore(s => s.pushRecent)
   const progress = useCourseStore(s => s.progress[videoId])
   const submitVideo = useCourseStore(s => s.submitVideo)
@@ -41,7 +44,12 @@ export default function Study() {
   }, [videoId])
 
   if (!video) return null
-  const sentences = video.sentences
+  const sentences = (video.sentences || []).map((s, i) => ({
+    ...s,
+    id: s.id ?? i + 1,
+    russian: s.russian ?? s.text ?? '',
+    chinese: s.chinese ?? s.tr ?? '',
+  }))
   const cur = sentences[curIdx]
 
   const go = (d) => {
