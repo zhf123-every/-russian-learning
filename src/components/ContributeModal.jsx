@@ -76,7 +76,7 @@ export default function ContributeModal({ onClose, onSubmit }) {
       onClose()
       navigate('/square')
     } catch (e) {
-      toast('投稿失败，请重试')
+      toast('投稿失败：' + (e.message || '请重试'))
     } finally {
       setSubmitting(false)
     }

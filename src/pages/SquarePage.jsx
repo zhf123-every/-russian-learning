@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSquareStore } from '../store/squareStore'
 import { SQUARE_CATEGORIES } from '../data/squareLibrary'
@@ -7,9 +7,12 @@ import ContributeModal from '../components/ContributeModal'
 export default function SquarePage() {
   const navigate = useNavigate()
   const items = useSquareStore(s => s.items())
-  const addItem = useSquareStore(s => s.addItem)
+  const submitItem = useSquareStore(s => s.submitItem)
+  const fetchServer = useSquareStore(s => s.fetchServer)
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [showContribute, setShowContribute] = useState(false)
+
+  useEffect(() => { fetchServer() }, [fetchServer])
 
   const filtered = selectedCategory === 'all'
     ? items
@@ -68,7 +71,7 @@ export default function SquarePage() {
       {showContribute && (
         <ContributeModal
           onClose={() => setShowContribute(false)}
-          onSubmit={(data) => addItem(data)}
+          onSubmit={(data) => submitItem(data)}
         />
       )}
     </div>
