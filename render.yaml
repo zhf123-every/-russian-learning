@@ -1,9 +1,3 @@
-databases:
-  - name: russian-learning-db
-    plan: free
-    databaseName: russian_learning
-    user: russian_learning
-
 services:
   - type: web
     name: russian-learning
@@ -12,10 +6,6 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: russian-learning-db
-          property: connectionString
       - key: AI_API_KEY
         sync: false
       - key: AI_BASE_URL

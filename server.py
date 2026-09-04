@@ -40,15 +40,6 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
-# 数据库（学习广场投稿持久化，Render Postgres 提供 DATABASE_URL）
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-try:
-    import psycopg2
-    import psycopg2.extras
-    _PSYCOPG2_OK = True
-except Exception:
-    _PSYCOPG2_OK = False
-
 
 def http_call(method, url, payload=None, headers=None, timeout=40):
     """返回 (status_code, body_str)。网络异常时返回 (0, 错误信息)。"""
@@ -379,111 +370,6 @@ def ai_chat(base_url, key, model, messages):
     raise RuntimeError(error_msg)
 
 
-# ---- 学习广场持久化（Postgres）----
-def _square_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
-
-
-def _square_init():
-    if not (_PSYCOPG2_OK and DATABASE_URL):
-        return
-    try:
-        conn = _square_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS square_items (
-                        id TEXT PRIMARY KEY,
-                        title TEXT NOT NULL,
-                        category TEXT NOT NULL,
-                        level TEXT NOT NULL,
-                        video_url TEXT,
-                        description TEXT,
-                        author TEXT,
-                        thumbnail TEXT,
-                        poster_url TEXT,
-                        views INTEGER DEFAULT 0,
-                        tags TEXT DEFAULT '[]',
-                        sentences TEXT DEFAULT '[]',
-                        created_at BIGINT DEFAULT 0
-                    )
-                """)
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        print("[square] 初始化数据库失败：", e)
-
-
-def _square_row_to_item(row):
-    return {
-        "id": row["id"],
-        "title": row["title"],
-        "category": row["category"],
-        "level": row["level"],
-        "videoUrl": row["video_url"] or "",
-        "description": row["description"] or "",
-        "author": row["author"] or "",
-        "thumbnail": row["thumbnail"] or "",
-        "posterUrl": row["poster_url"] or "",
-        "views": row["views"] or 0,
-        "tags": json.loads(row["tags"] or "[]"),
-        "sentences": json.loads(row["sentences"] or "[]"),
-        "createdAt": row["created_at"] or 0,
-    }
-
-
-def _square_list():
-    conn = _square_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM square_items ORDER BY created_at DESC")
-            rows = cur.fetchall()
-        return [_square_row_to_item(r) for r in rows]
-    finally:
-        conn.close()
-
-
-def _square_submit(item):
-    conn = _square_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO square_items
-                (id, title, category, level, video_url, description, author,
-                 thumbnail, poster_url, views, tags, sentences, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    category = EXCLUDED.category,
-                    level = EXCLUDED.level,
-                    video_url = EXCLUDED.video_url,
-                    description = EXCLUDED.description,
-                    author = EXCLUDED.author,
-                    thumbnail = EXCLUDED.thumbnail,
-                    poster_url = EXCLUDED.poster_url,
-                    sentences = EXCLUDED.sentences,
-                    tags = EXCLUDED.tags
-            """, (
-                item.get("id", ""),
-                item.get("title", ""),
-                item.get("category", ""),
-                item.get("level", ""),
-                item.get("videoUrl", ""),
-                item.get("description", ""),
-                item.get("author", ""),
-                item.get("thumbnail", ""),
-                item.get("posterUrl", ""),
-                item.get("views", 0),
-                json.dumps(item.get("tags", []), ensure_ascii=False),
-                json.dumps(item.get("sentences", []), ensure_ascii=False),
-                item.get("createdAt", 0),
-            ))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -581,26 +467,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _handle_square_list(self):
-        if not (_PSYCOPG2_OK and DATABASE_URL):
-            return self._json(200, {"ok": True, "list": []})
-        try:
-            return self._json(200, {"ok": True, "list": _square_list()})
-        except Exception as e:
-            print("[square] 读取列表失败：", e)
-            return self._json(200, {"ok": True, "list": []})
-
-    def _handle_square_submit(self, data):
-        if not (_PSYCOPG2_OK and DATABASE_URL):
-            return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
-        if not (data.get("id") and data.get("title")):
-            return self._json(400, {"ok": False, "error": "缺少必填字段"})
-        try:
-            _square_submit(data)
-            return self._json(200, {"ok": True})
-        except Exception as e:
-            return self._json(500, {"ok": False, "error": "保存失败：" + str(e)})
-
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
@@ -610,8 +476,6 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/stream":
             return self._handle_stream()
-        if path == "/api/square/list":
-            return self._handle_square_list()
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
@@ -649,8 +513,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/transcribe":
                 return self._handle_transcribe(data)
-            if path == "/api/square/submit":
-                return self._handle_square_submit(data)
             if path == "/api/subs":
                 url = (data.get("url") or "").strip()
                 if not url:
@@ -722,7 +584,6 @@ if __name__ == "__main__":
     print("=" * 48)
     if os.environ.get("NO_BROWSER") != "1":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    _square_init()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

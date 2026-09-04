@@ -1,4 +1,3 @@
 yt-dlp
 razdel
-psycopg2-binary
 # faster-whisper  # 可选：本地俄语语音转写（体积较大，模型首次使用时按需下载）。如需「从视频识别字幕」功能请取消注释
