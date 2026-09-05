@@ -40,6 +40,9 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
+# 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
+
 
 # ---- 学习广场持久化（Postgres）----
 def _normalize_db_url(url):
@@ -636,6 +639,16 @@ def _square_submit(item):
         conn.close()
 
 
+def _square_delete(item_id):
+    conn = _square_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM square_items WHERE id = %s", (item_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -770,6 +783,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _check_admin(self, data):
+        """校验请求携带的管理员密钥。返回 None 表示通过，否则返回错误响应。"""
+        if not ADMIN_KEY:
+            return self._json(500, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
+        if (data.get("adminKey") or "").strip() != ADMIN_KEY:
+            return self._json(403, {"ok": False, "error": "无权限：管理员密钥错误"})
+        return None
+
     def _handle_square_list(self):
         if not (_PSYCOPG2_OK and DATABASE_URL):
             return self._json(200, {"ok": True, "list": []})
@@ -780,6 +801,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "list": []})
 
     def _handle_square_submit(self, data):
+        err = self._check_admin(data)
+        if err:
+            return err
         if not (_PSYCOPG2_OK and DATABASE_URL):
             return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
         if not (data.get("id") and data.get("title")):
@@ -789,6 +813,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "保存失败：" + str(e)})
+
+    def _handle_square_delete(self, data):
+        err = self._check_admin(data)
+        if err:
+            return err
+        if not (_PSYCOPG2_OK and DATABASE_URL):
+            return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+        if not data.get("id"):
+            return self._json(400, {"ok": False, "error": "缺少 id"})
+        try:
+            _square_delete(data.get("id"))
+            return self._json(200, {"ok": True})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "删除失败：" + str(e)})
+
+    def _handle_admin_check(self, data):
+        if not ADMIN_KEY:
+            return self._json(200, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
+        ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
+        return self._json(200, {"ok": ok})
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -840,6 +884,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_transcribe(data)
             if path == "/api/square/submit":
                 return self._handle_square_submit(data)
+            if path == "/api/square/delete":
+                return self._handle_square_delete(data)
+            if path == "/api/admin/check":
+                return self._handle_admin_check(data)
             if path == "/api/subs":
                 url = (data.get("url") or "").strip()
                 if not url:

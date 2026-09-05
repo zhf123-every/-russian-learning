@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from '../lib/toast'
+import { VIDEO_SOURCES, sourcePlaceholder } from '../lib/videoSources'
 
 const CATEGORIES = ['shopping', 'daily', 'vlog', 'speech', 'intro', 'campus', 'work', 'transport']
 const LEVELS = ['A1', 'A2', 'B1', 'B2']
@@ -11,9 +12,12 @@ export default function ContributeModal({ onClose, onSubmit }) {
     title: '',
     category: 'shopping',
     level: 'A1',
+    source: 'youtube',
     videoUrl: '',
     description: ''
   })
+  const [autoGrab, setAutoGrab] = useState(false)   // 默认不抓字幕，只提取视频
+  const [manualSubs, setManualSubs] = useState('')   // 手动粘贴字幕（可选）
   const [submitting, setSubmitting] = useState(false)
 
   const handleChange = (field) => (e) => {
@@ -27,52 +31,60 @@ export default function ContributeModal({ onClose, onSubmit }) {
     }
     setSubmitting(true)
     try {
-      const id = 'square_' + Date.now()
-      const author = '匿名用户'
-      const thumbnail = `https://picsum.photos/seed/${id}/400/280`
-      const posterUrl = `https://picsum.photos/seed/${id}/1280/720`
-      const views = 0
-      const createdAt = Date.now()
-
-      // 从视频链接抓取字幕并断句
       let sentences = []
       let fetchError = ''
-      try {
-        const r = await fetch('/api/subs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: form.videoUrl })
-        })
-        const j = await r.json()
-        if (j.ok && j.text) {
-          const { parseTextToSentences } = await import('../lib/srt')
-          const { sentences: parsed } = parseTextToSentences(j.text)
-          sentences = parsed.map((s, i) => ({ id: i + 1, russian: s.text, chinese: '' }))
-        } else {
-          fetchError = j.error || '未知错误'
+
+      // 字幕优先级：手动粘贴 > 自动抓取 > 无（纯视频）
+      if (manualSubs.trim()) {
+        const { parseTextToSentences } = await import('../lib/srt')
+        const { sentences: parsed } = parseTextToSentences(manualSubs)
+        sentences = parsed.map((s, i) => ({ id: i + 1, russian: s.text, chinese: '' }))
+      } else if (autoGrab) {
+        try {
+          const r = await fetch('/api/subs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: form.videoUrl })
+          })
+          const j = await r.json()
+          if (j.ok && j.text) {
+            const { parseTextToSentences } = await import('../lib/srt')
+            const { sentences: parsed } = parseTextToSentences(j.text)
+            sentences = parsed.map((s, i) => ({ id: i + 1, russian: s.text, chinese: '' }))
+          } else {
+            fetchError = j.error || '未知错误'
+          }
+        } catch (e) {
+          fetchError = e.message
         }
-      } catch (e) {
-        fetchError = e.message
       }
 
+      const id = 'square_' + Date.now()
       const payload = {
         id,
         title: form.title,
         category: form.category,
         level: form.level,
+        source: form.source,
         videoUrl: form.videoUrl,
         description: form.description,
-        thumbnail,
-        posterUrl,
+        thumbnail: `https://picsum.photos/seed/${id}/400/280`,
+        posterUrl: `https://picsum.photos/seed/${id}/1280/720`,
         sentences,
-        author,
-        views,
-        createdAt,
-        tags: [form.category, form.level]
+        author: '管理员',
+        views: 0,
+        createdAt: Date.now(),
+        tags: [form.source, form.category, form.level]
       }
 
       await onSubmit(payload)
-      toast(fetchError ? '已投稿，但字幕抓取失败：' + fetchError : '投稿成功！')
+      if (fetchError) {
+        toast('已投稿（视频可看），但自动抓字幕失败：' + fetchError)
+      } else if (sentences.length) {
+        toast('投稿成功！已含 ' + sentences.length + ' 句字幕')
+      } else {
+        toast('投稿成功（纯视频，暂无字幕）')
+      }
       onClose()
       navigate('/square')
     } catch (e) {
@@ -86,11 +98,27 @@ export default function ContributeModal({ onClose, onSubmit }) {
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
         <h2>投稿素材</h2>
-        <p className="hint">请提供视频链接和分类，我们将在审核后发布到学习广场</p>
+        <p className="hint">贴链接即可提取视频；字幕可选（自动抓取或手动粘贴），没有也可以先发纯视频。</p>
 
         <div className="field">
           <label>标题</label>
           <input value={form.title} onChange={handleChange('title')} placeholder="例如：莫斯科地铁站的美丽" />
+        </div>
+
+        <div className="field">
+          <label>视频来源</label>
+          <select value={form.source} onChange={handleChange('source')}>
+            {VIDEO_SOURCES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>视频链接</label>
+          <input
+            value={form.videoUrl}
+            onChange={handleChange('videoUrl')}
+            placeholder={sourcePlaceholder(form.source)}
+          />
         </div>
 
         <div className="field">
@@ -108,11 +136,20 @@ export default function ContributeModal({ onClose, onSubmit }) {
         </div>
 
         <div className="field">
-          <label>视频链接</label>
-          <input
-            value={form.videoUrl}
-            onChange={handleChange('videoUrl')}
-            placeholder="https://www.youtube.com/watch?v=... 或 Bilibili"
+          <label className="row" style={{ alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={autoGrab} onChange={e => setAutoGrab(e.target.checked)} />
+            <span>⚡ 自动抓俄语字幕（可选）</span>
+          </label>
+          <div className="hint" style={{ marginTop: 2 }}>勾选后会自动抓取视频里的俄语字幕（含自动生成字幕）；不勾则只提取视频。</div>
+        </div>
+
+        <div className="field">
+          <label>手动粘贴字幕（可选，SRT / VTT / 纯文本）</label>
+          <textarea
+            rows={4}
+            value={manualSubs}
+            onChange={e => setManualSubs(e.target.value)}
+            placeholder={'视频没有俄语字幕时，可在这里粘贴字幕。\n\nSRT 例子：\n1\n00:00:01,000 --> 00:00:04,000\nПривет, как дела?'}
           />
         </div>
 
@@ -122,7 +159,7 @@ export default function ContributeModal({ onClose, onSubmit }) {
             value={form.description}
             onChange={handleChange('description')}
             placeholder="补充说明，比如场景、学习目标等"
-            rows={3}
+            rows={2}
           />
         </div>
 

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useCourseStore } from '../store/courseStore'
 import { useSettingsStore } from '../store/settingsStore'
 import { toast } from '../lib/toast'
+import { VIDEO_SOURCES, sourceLabel, sourcePlaceholder } from '../lib/videoSources'
 import SegPreviewModal from './SegPreviewModal'
 
 const DEMO_TEXT = `Привет, меня зовут Иван. Я живу в Москве.
@@ -17,7 +18,7 @@ export default function AddMaterialModal({ onClose }) {
   const navigate = useNavigate()
   const addMaterial = useCourseStore(s => s.addMaterial)
   const settings = useSettingsStore(s => s.settings)
-  const [type, setType] = useState('youtube') // 'youtube' | 'local'
+  const [source, setSource] = useState('youtube') // 平台 key 或 'local'
   const [url, setUrl] = useState('')
   const [file, setFile] = useState(null)
   const [subs, setSubs] = useState('')
@@ -26,6 +27,8 @@ export default function AddMaterialModal({ onClose }) {
   const [preview, setPreview] = useState(null) // { sentences, cues, hasTimestamps }
   const fileRef = useRef()
 
+  const isLocal = source === 'local'
+
   const loadDemo = () => {
     setSubs(DEMO_TEXT)
     if (!title) setTitle('示例数据：俄语自我介绍')
@@ -33,7 +36,7 @@ export default function AddMaterialModal({ onClose }) {
   }
 
   const fetchSubs = async () => {
-    if (!url.trim()) { toast('请先填写 YouTube 链接'); return }
+    if (!url.trim()) { toast('请先填写视频链接'); return }
     setBusy(true)
     try {
       const r = await fetch('/api/subs', {
@@ -44,7 +47,7 @@ export default function AddMaterialModal({ onClose }) {
       const j = await r.json()
       if (!j.ok) { toast('抓字幕失败：' + (j.error || '未知错误')); return }
       setSubs(j.text || '')
-      toast('已抓取字幕，共 ' + (j.cues?.length || 0) + ' 条')
+      toast('已抓取字幕')
     } catch (e) {
       toast('请求失败：' + e.message)
     } finally {
@@ -64,14 +67,13 @@ export default function AddMaterialModal({ onClose }) {
   }
 
   const save = async () => {
-    if (!subs.trim()) { toast('请粘贴或抓取字幕'); return }
     setBusy(true)
 
     // 本地解析（无需网络）
     const { parseTextToSentences } = await import('../lib/srt')
-    const { sentences, hasTimestamps } = parseTextToSentences(subs)
+    const { sentences, hasTimestamps } = parseTextToSentences(subs.trim())
 
-    // 有 API Key 且无时间戳 → 走 AI 断句预览
+    // 有 API Key 且无时间戳且确实有句子 → 走 AI 断句预览
     if (settings.apiKey && !hasTimestamps && sentences.length > 0) {
       setBusy(false)
       setPreview({ sentences, cues: null, hasTimestamps })
@@ -82,7 +84,12 @@ export default function AddMaterialModal({ onClose }) {
   }
 
   const finishImport = (sentences, translations) => {
-    if (!sentences.length) { toast('未能解析出任何句子'); return }
+    const hasVideo = (!isLocal && url.trim()) || (isLocal && file)
+    if (!sentences.length && !hasVideo) {
+      setBusy(false)
+      toast('请粘贴字幕，或填写视频链接 / 选择本地文件')
+      return
+    }
     const id = 'custom_' + Date.now().toString(36)
     const wordCount = sentences.reduce((n, s) => n + s.text.trim().split(/\s+/).length, 0)
     const enriched = sentences.map((s, i) => ({
@@ -92,19 +99,19 @@ export default function AddMaterialModal({ onClose }) {
     }))
     addMaterial({
       id,
-      title: title.trim() || '自定义文本',
+      title: title.trim() || (hasVideo ? '视频素材' : '自定义文本'),
       sentences: enriched,
       createdAt: Date.now(),
       thumbnail: 'https://picsum.photos/seed/' + id + '/400/280',
       posterUrl: 'https://picsum.photos/seed/' + id + '/1280/720',
-      tags: ['自定义'],
+      tags: [sourceLabel(source)],
       duration: '—',
       words: wordCount,
       level: '自定义',
-      ...(type === 'youtube' && url ? { videoUrl: url.trim() } : {}),
-      ...(type === 'local' && file ? { videoFileName: file.name, videoFileType: file.type } : {}),
+      ...(!isLocal && url.trim() ? { videoUrl: url.trim() } : {}),
+      ...(isLocal && file ? { videoFileName: file.name, videoFileType: file.type } : {}),
     })
-    toast('已保存，开始学习')
+    toast(sentences.length ? '已保存，开始学习' : '已保存视频（暂无字幕，仅可观看）')
     navigate('/study/' + id)
   }
 
@@ -114,33 +121,35 @@ export default function AddMaterialModal({ onClose }) {
         <div className="modal" onClick={e => e.stopPropagation()}>
           <h2>＋ 导入材料</h2>
           <p className="hint">
-            一个「材料」= 视频 + 字幕。字幕会拆成一句句台词，供你逐句学习。<br />
-            📌 点击「保存并开始学习」时，若有 API Key 且无时间戳，会用 AI 智能断句并弹出预览窗口；否则用规则断句（cue 边界 + 标点）后直接保存。
+            一个「材料」= 视频 + 字幕。贴链接即可提取视频；字幕可选（自动抓取或手动粘贴），没有也能先看纯视频。<br />
+            📌 有 API Key 且字幕无时间戳时，会用 AI 智能断句并弹出预览；否则用规则断句后直接保存。
           </p>
 
           <div className="field">
             <label>① 视频来源</label>
-            <select value={type} onChange={e => setType(e.target.value)}>
-              <option value="youtube">YouTube 链接</option>
+            <select value={source} onChange={e => setSource(e.target.value)}>
+              {VIDEO_SOURCES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
               <option value="local">本地视频文件</option>
             </select>
           </div>
 
-          {type === 'youtube' && (
-            <div className="field">
-              <label>YouTube 链接</label>
-              <input
-                value={url}
-                onChange={e => setUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-              />
-              <div className="hint" style={{ marginTop: 4 }}>
-                贴链接后点「⚡ 自动抓字幕」即可（会下载俄语字幕，含自动生成字幕）。
+          {!isLocal && (
+            <>
+              <div className="field">
+                <label>视频链接</label>
+                <input
+                  value={url}
+                  onChange={e => setUrl(e.target.value)}
+                  placeholder={sourcePlaceholder(source)}
+                />
+                <div className="hint" style={{ marginTop: 4 }}>
+                  直接保存 = 只提取视频（不抓字幕）；想抓俄语字幕再点下方「⚡ 自动抓字幕」。
+                </div>
               </div>
-            </div>
+            </>
           )}
 
-          {type === 'local' && (
+          {isLocal && (
             <div className="field">
               <label>本地视频文件（保存在本机浏览器内，可跨会话）</label>
               <input ref={fileRef} type="file" accept="video/*" onChange={onFile} />
@@ -148,17 +157,15 @@ export default function AddMaterialModal({ onClose }) {
           )}
 
           <div className="field">
-            <label>② 字幕（SRT / VTT / 纯文本）</label>
+            <label>② 字幕（SRT / VTT / 纯文本，可选）</label>
             <textarea
               rows={8}
               value={subs}
               onChange={e => setSubs(e.target.value)}
-              placeholder={'粘贴 SRT/VTT 字幕，或纯俄语文本。\n\nSRT 例子：\n1\n00:00:01,000 --> 00:00:04,000\nПривет, как дела?'}
+              placeholder={'粘贴 SRT/VTT 字幕，或纯俄语文本。没有字幕可留空（仅观看视频）。\n\nSRT 例子：\n1\n00:00:01,000 --> 00:00:04,000\nПривет, как дела?'}
             />
             <div className="row" style={{ marginTop: 6 }}>
-              <button className="btn sm" disabled={busy} onClick={fetchSubs}>
-                ⚡ 自动抓字幕
-              </button>
+              {!isLocal && <button className="btn sm" disabled={busy} onClick={fetchSubs}>⚡ 自动抓字幕</button>}
               <button className="btn sm" onClick={loadDemo}>用示例数据试试</button>
             </div>
           </div>

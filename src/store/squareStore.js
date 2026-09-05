@@ -37,17 +37,29 @@ export const useSquareStore = create((set, get) => ({
     }
   },
 
-  async submitItem(item) {
+  async submitItem(item, adminKey) {
     const r = await fetch('/api/square/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item),
+      body: JSON.stringify({ ...item, adminKey: adminKey || '' }),
     })
     const j = await r.json()
     if (!j.ok) throw new Error(j.error || '投稿失败')
     // 服务端持久化成功后，重新拉取服务端列表。
     // 只更新本地 serverItems 时，其他用户刷新页面看不到新条目；
     // 这里触发 fetchServer()，让新条目进入所有用户的视图。
+    await get().fetchServer()
+    return j
+  },
+
+  async deleteItem(id, adminKey) {
+    const r = await fetch('/api/square/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, adminKey: adminKey || '' }),
+    })
+    const j = await r.json()
+    if (!j.ok) throw new Error(j.error || '删除失败')
     await get().fetchServer()
     return j
   },

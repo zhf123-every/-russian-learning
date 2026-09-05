@@ -109,6 +109,37 @@ export default function Study() {
   }))
   const cur = sentences[curIdx]
 
+  // 无字幕素材：仅展示视频可观看，不做逐句学习
+  if (sentences.length === 0) {
+    return (
+      <div className="main">
+        <div className="col">
+          <div className="card" style={{ padding: 10 }}>
+            <div className="video-wrap">
+              {video.videoUrl ? (
+                <video
+                  src={`/api/stream?url=${encodeURIComponent(video.videoUrl)}`}
+                  poster={video.posterUrl || video.thumbnail}
+                  controls
+                  playsInline
+                />
+              ) : (
+                <img src={video.posterUrl || video.thumbnail} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="col">
+          <div className="card" style={{ padding: 24, textAlign: 'center' }}>
+            <div style={{ fontSize: 44, marginBottom: 10 }}>📺</div>
+            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>该视频暂无字幕</div>
+            <p className="hint" style={{ margin: 0 }}>只能观看视频，暂无法逐句学习。</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const go = (d) => {
     setAiHtml('')
     const n = curIdx + d
