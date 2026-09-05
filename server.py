@@ -454,6 +454,7 @@ def _normalize_db_url(url):
     return f"{parsed.scheme}://{netloc}{path}{query}"
 
 # 连接数据库前先自动修正地址
+def _normalize_db_url(url):
     fixed_url = _normalize_db_url(DATABASE_URL)
     return psycopg2.connect(fixed_url, sslmode="require")
 
