@@ -184,38 +184,99 @@ def download_audio(url):
     return os.path.join(tmp, files[0]), None
 
 
+def _pick_best_video(formats):
+    """从 http(s) 直链里挑最高清的 H.264(mp4) 视频（≤1080p，避免 4K/8K 超大流）。"""
+    cands = [f for f in formats
+             if f.get("protocol") in ("https", "http")
+             and f.get("vcodec") not in (None, "none")
+             and f.get("url")]
+    if not cands:
+        return None
+    def key(f):
+        vc = (f.get("vcodec") or "").lower()
+        h = f.get("height") or 0
+        h = h if h <= 1080 else 0
+        return (vc.startswith("avc1"), h, f.get("tbr") or 0)
+    return max(cands, key=key)
+
+
+def _pick_best_audio(formats):
+    """从 http(s) 直链里挑最高码率的 AAC(m4a) 音频。"""
+    cands = [f for f in formats
+             if f.get("protocol") in ("https", "http")
+             and f.get("acodec") not in (None, "none")
+             and f.get("url")]
+    if not cands:
+        return None
+    return max(cands, key=lambda f: ((f.get("ext") == "m4a"), f.get("abr") or 0))
+
+
 def resolve_stream(url):
-    """用 yt-dlp 解析视频直链 + 请求头（B 站等需要 Referer 防盗链）。
-    优先选单文件 mp4，便于做 Range 代理让 <video> 支持拖动进度条。
-    返回 (直链 URL, 请求头 dict)；失败返回 (None, 错误信息)。"""
+    """用 yt-dlp 解析视频，返回 (kind, payload, headers, error)。
+
+    kind：
+      "direct"  -> payload 是音视频合一的渐进式直链（http/https，可直接 Range 代理）
+      "ffmpeg"  -> payload 是 [{"url": ...}, ...]（视频 + 可选音频，需 ffmpeg 重封装）
+    headers 是 yt-dlp 给出的请求头（Referer / User-Agent，B 站防盗链必需）。
+    """
     try:
         import yt_dlp
     except Exception:
-        return None, "未安装 yt-dlp。请运行：python -m pip install yt-dlp"
-    opts = {
-        "quiet": True, "no_warnings": True, "skip_download": True,
-        "format": "best[ext=mp4]/best",  # 优先单文件 mp4，避免 HLS 分片代理复杂
-    }
+        return None, None, None, "未安装 yt-dlp。请运行：python -m pip install yt-dlp"
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        return None, "解析视频失败：" + str(e)[:300]
+        return None, None, None, "解析视频失败：" + str(e)[:300]
+
     formats = info.get("formats") or []
-    chosen = None
+    headers = info.get("http_headers") or {}
+
+    # 1) 音视频合一的渐进式直链（个别站点 / 老视频的 format 18 之类）
     for f in formats:
-        if f.get("protocol") not in ("m3u8", "m3u8_native") and f.get("url"):
-            chosen = f
-            break
-    if chosen is None and formats:
-        chosen = formats[0]
-    if chosen is None:
-        chosen = {"url": info.get("url")}
-    direct = chosen.get("url")
-    headers = chosen.get("http_headers") or info.get("http_headers") or {}
-    if not direct:
-        return None, "未找到可播放的视频流"
-    return direct, headers
+        if (f.get("protocol") in ("https", "http")
+                and f.get("acodec") not in (None, "none")
+                and f.get("vcodec") not in (None, "none")
+                and f.get("url")):
+            return "direct", f["url"], f.get("http_headers") or headers, None
+
+    # 2) 音视频合一的 m3u8（B 站 HLS：单文件、含音视频，ffmpeg 可直接读）
+    for f in formats:
+        if (f.get("protocol") in ("m3u8", "m3u8_native")
+                and f.get("url")
+                and f.get("acodec") not in (None, "none")
+                and f.get("vcodec") not in (None, "none")):
+            return "ffmpeg", [{"url": f["url"]}], f.get("http_headers") or headers, None
+
+    # 3) 分离的视频 + 音频（YouTube DASH）
+    video = _pick_best_video(formats)
+    audio = _pick_best_audio(formats)
+    if video:
+        payload = [{"url": video["url"]}]
+        if audio:
+            payload.append({"url": audio["url"]})
+        return "ffmpeg", payload, video.get("http_headers") or headers, None
+
+    return None, None, None, "未找到可播放的视频流"
+
+
+def _build_ffmpeg_cmd(payload, headers, ffmpeg="ffmpeg"):
+    """构造 ffmpeg 命令：把（视频 + 可选音频）重封装成单一 mp4 流（-c copy 不转码）。"""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    hdr_lines = ["%s: %s" % (k, v) for k, v in (headers or {}).items()]
+    hdr_str = "\r\n".join(hdr_lines) + "\r\n" if hdr_lines else ""
+    for src in payload:
+        if hdr_str:
+            cmd += ["-headers", hdr_str]  # 每个输入都带上防盗链/UA 头
+        cmd += ["-i", src["url"]]
+    if len(payload) == 1:
+        cmd += ["-map", "0"]  # 单输入（m3u8）：取全部轨（音 + 视频）
+    else:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0"]  # 双输入：视频轨 + 音频轨
+    cmd += ["-c", "copy", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4", "-"]
+    return cmd
 
 
 def dict_lookup(word):
@@ -615,19 +676,34 @@ class Handler(BaseHTTPRequestHandler):
             shutil.rmtree(os.path.dirname(audio_path), ignore_errors=True)
 
     def _handle_stream(self):
-        """流式代理：解析视频直链（B 站等）并转发给 <video>，支持 Range 拖动进度条。"""
+        """视频播放代理：优先直接转发渐进式直链（可拖动）；否则用 ffmpeg 重封装成 mp4 流。"""
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         url = (qs.get("url") or [""])[0]
         if not url:
             self.send_response(400); self._cors(); self.end_headers(); return
-        direct, headers = resolve_stream(url)
-        if direct is None:
+        kind, payload, headers, err = resolve_stream(url)
+        if err:
             self.send_response(502); self._cors(); self.end_headers()
             try:
-                self.wfile.write(("流式代理失败：" + (headers or "")).encode("utf-8"))
+                self.wfile.write(("流式代理失败：" + err).encode("utf-8"))
             except Exception:
                 pass
             return
+        if kind == "direct":
+            self._proxy_stream(payload, headers)
+            return
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self.send_response(502); self._cors(); self.end_headers()
+            try:
+                self.wfile.write("流式代理失败：未安装 ffmpeg（服务器需安装 ffmpeg）".encode("utf-8"))
+            except Exception:
+                pass
+            return
+        self._stream_ffmpeg(_build_ffmpeg_cmd(payload, headers, ffmpeg))
+
+    def _proxy_stream(self, direct, headers):
+        """直接转发渐进式直链，支持 Range 拖动进度条。"""
         req = urllib.request.Request(direct)
         for k, v in headers.items():
             req.add_header(k, v)
@@ -655,6 +731,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
         except Exception:
             pass
+
+    def _stream_ffmpeg(self, cmd):
+        """跑 ffmpeg 把重封装后的 mp4 流 chunked 回给浏览器；客户端断开时终止进程。"""
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = proc.stdout.read(256 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except Exception:
+            pass
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     def _handle_square_list(self):
         if not (_PSYCOPG2_OK and DATABASE_URL):

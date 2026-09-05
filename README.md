@@ -8,8 +8,10 @@
 # 1. 装依赖
 #    yt-dlp          抓 YouTube 字幕
 #    razdel          俄语无标点字幕断句
+#    ffmpeg          视频播放（把 YouTube/B 站分离流重封装成可播放的 mp4）
 #    faster-whisper  「从音频识别字幕」语音转写（可选：本地视频无字幕时用，纯本地无需 key）
 pip install yt-dlp razdel faster-whisper
+# Windows 装 ffmpeg：winget install ffmpeg；macOS：brew install ffmpeg；Linux：sudo apt install ffmpeg
 
 # 2. 启动
 python server.py
@@ -40,6 +42,7 @@ python server.py
 ## 常见问题
 
 - **抓字幕失败**：该视频可能没有俄语字幕，或没装 `yt-dlp`（`pip install yt-dlp`）。
+- **视频黑屏/播放不了**：多为没装 `ffmpeg`（YouTube/B 站高清流需要它重封装）；装好后重启 `python server.py`。
 - **AI 解析报错**：设置里的 baseUrl / Key / 模型名没填对，或网络不通。
 - **语音识别不可用**：用 Chrome / Edge 打开 `localhost` 地址；Safari/Firefox 可能不支持，用「自评」按钮代替。
 
