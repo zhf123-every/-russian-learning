@@ -21,9 +21,9 @@ services:
         # 数据库所在区域，默认 oregon；若你的 Postgres 在其它区域（如 singapore/frankfurt）请填对应值
       - key: YT_COOKIES
         sync: false
-        # 可选：YouTube 反爬会要求登录（"Sign in to confirm you're not a bot"）。
-        # 用浏览器插件（如 Get cookies.txt LOCALLY）导出 youtube.com 的 cookies.txt，
-        # 把文件内容整段粘贴到这个变量里，即可绕过。
+        # 可选：YouTube（"Sign in to confirm you're not a bot"）/ B 站（"HTTP 412"）反爬时用。
+        # 用浏览器插件（如 Get cookies.txt LOCALLY）分别导出 youtube.com 和 bilibili.com 的 cookies，
+        # 把两个文件内容拼在一起整段粘贴到这个变量里，即可绕过。
       - key: ADMIN_KEY
         sync: false
         # 学习广场管理员密钥：填一个只有你知道的字符串。页面上点「🔐 管理」输入它才能上传/删除素材。

@@ -127,8 +127,9 @@ _YT_COOKIES_TMP = None
 def _yt_cookies_file():
     """返回 yt-dlp 用的 cookies 文件路径；未配置则返回 None。
 
-    YouTube 对数据中心 IP 反爬，未登录抓字幕/取流常报
-    「Sign in to confirm you're not a bot」，需要提供浏览器导出的 cookies。
+    YouTube/B 站等对数据中心 IP 反爬，未登录抓字幕/取流常报
+    「Sign in to confirm you're not a bot」或「HTTP Error 412」，
+    需要提供浏览器导出的 cookies（该文件按域名匹配，可同时含 YouTube 与 B 站）。
     优先读 YT_COOKIES_FILE（指向 cookies.txt 文件路径）；其次读 YT_COOKIES
     （Netscape 格式 cookies 的完整内容，会写入临时文件缓存复用）。
     """
@@ -151,6 +152,22 @@ def _yt_cookies_file():
         return None
 
 
+BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _bili_headers(url):
+    """B 站反爬（412 Precondition Failed）：需要 Origin/Referer + 浏览器 UA。
+    仅对 B 站链接返回这些请求头，避免影响 YouTube 等其它站点。"""
+    if "bilibili.com" in url or "b23.tv" in url:
+        return {
+            "Origin": "https://www.bilibili.com",
+            "Referer": "https://www.bilibili.com",
+            "User-Agent": BILI_UA,
+        }
+    return {}
+
+
 def fetch_subs(url):
     """用 yt-dlp 抓取俄语字幕（含自动生成字幕）。返回 (字幕文本, 错误信息或 None)。"""
     tmp = tempfile.mkdtemp(prefix="ru_subs_")
@@ -167,6 +184,8 @@ def fetch_subs(url):
         cookies = _yt_cookies_file()
         if cookies:
             cmd += ["--cookies", cookies]
+        for k, v in _bili_headers(url).items():
+            cmd += ["--add-header", "%s:%s" % (k, v)]
         cmd += ["-o", out_tmpl, url]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
         if proc.returncode != 0:
@@ -205,6 +224,8 @@ def download_audio(url):
     cookies = _yt_cookies_file()
     if cookies:
         cmd += ["--cookies", cookies]
+    for k, v in _bili_headers(url).items():
+        cmd += ["--add-header", "%s:%s" % (k, v)]
     cmd += ["-o", out_tmpl, url]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -269,6 +290,9 @@ def resolve_stream(url):
     cookies = _yt_cookies_file()
     if cookies:
         opts["cookiefile"] = cookies
+    bili_hdrs = _bili_headers(url)
+    if bili_hdrs:
+        opts["http_headers"] = bili_hdrs
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)

@@ -43,6 +43,7 @@ python server.py
 
 - **抓字幕失败**：该视频可能没有俄语字幕，或没装 `yt-dlp`（`pip install yt-dlp`）。
 - **YouTube 报「Sign in to confirm you're not a bot」**：YouTube 反爬要求登录。用浏览器插件（如 Get cookies.txt LOCALLY）导出 youtube.com 的 cookies.txt，把内容配到环境变量 `YT_COOKIES`（Render 上在 Environment 里填），即可绕过。
+- **B 站视频黑屏 / 报「HTTP 412」**：B 站对国外/云服务器反爬。先更新部署到最新（已内置 Origin/Referer 头）；若仍 412，用插件导出 bilibili.com 的 cookies 拼进 `YT_COOKIES`。
 - **视频黑屏/播放不了**：多为没装 `ffmpeg`（YouTube/B 站高清流需要它重封装）；装好后重启 `python server.py`。
 - **AI 解析报错**：设置里的 baseUrl / Key / 模型名没填对，或网络不通。
 - **语音识别不可用**：用 Chrome / Edge 打开 `localhost` 地址；Safari/Firefox 可能不支持，用「自评」按钮代替。
