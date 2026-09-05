@@ -16,6 +16,9 @@ services:
         fromDatabase:
           name: russian-learning-db
           property: connectionString
+      - key: PG_REGION
+        sync: false
+        # 数据库所在区域，默认 oregon；若你的 Postgres 在其它区域（如 singapore/frankfurt）请填对应值
       - key: AI_API_KEY
         sync: false
       - key: AI_BASE_URL

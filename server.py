@@ -43,14 +43,17 @@ AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
 # ---- 学习广场持久化（Postgres）----
 def _normalize_db_url(url):
-    """修正 Render 从 fromDatabase 注入的 DATABASE_URL 缺失端口问题。
+    """修正 Render 注入的 DATABASE_URL 的两个问题。
 
-    Render 的 fromDatabase.property=connectionString 有时返回
-    postgres://user:pass@HOST/dbname 的简写形式，HOST 缺少 :5432 端口。
-    libpq 会把裸 hostname 直接拿去做 DNS 解析，而 Render 内部 hostname
-    （dpg-xxx-a）没有域名后缀时解析失败，报：
+    Render 的 fromDatabase.property=connectionString 返回的是「私有网络」连接串，
+    主机名是内部短名 dpg-xxx-a（无域名后缀）。免费 Web 服务不在私有网络内时，
+    libpq 对裸 hostname 做 DNS 解析会报：
         could not translate host name "dpg-xxx-a" to address
-    这里自动补上 :5432 端口，并确保 hostname 完整。
+    同时该连接串还常缺 :5432 端口。这里：
+      1. 给内部短名补外部域名后缀 .<region>-postgres.render.com（默认 oregon，
+         可用环境变量 PG_REGION 覆盖）；
+      2. 缺端口补 5432；
+      3. 用 quote 转义 password 里的特殊字符。
     """
     if not url:
         return url
@@ -62,31 +65,27 @@ def _normalize_db_url(url):
         parsed = urllib.parse.urlparse(url)
     except Exception:
         return url
+
     host = parsed.hostname or ""
-    port = parsed.port
-    if port:
-        return url  # 已有端口，无需处理
-    # 补端口：5432
+    port = parsed.port or 5432
+
+    # 内部短主机名（dpg-xxx-a，无点）补外部域名，否则 DNS 解析失败
+    if host.startswith("dpg-") and "." not in host:
+        region = (os.environ.get("PG_REGION") or "oregon").strip()
+        host = "%s.%s-postgres.render.com" % (host, region)
+
+    userinfo = ""
     if parsed.username:
         userinfo = "%s:%s@" % (parsed.username,
                               urllib.parse.quote(parsed.password or "", safe=""))
-    else:
-        userinfo = ""
-    netloc = "%s%s:5432" % (userinfo, host)
-    if parsed.path:
-        path = parsed.path
-    else:
-        path = ""
+    netloc = "%s%s:%d" % (userinfo, host, port)
+    path = parsed.path or ""
     query = ("?" + parsed.query) if parsed.query else ""
     return "%s://%s%s%s" % (parsed.scheme, netloc, path, query)
 
 
 # 数据库（学习广场投稿持久化，Render Postgres 提供 DATABASE_URL）
-# Render 的 fromDatabase.property=connectionString 有时返回
-# postgres://user:pass@HOST/dbname 的简写，HOST 缺少 :5432 端口。
-# libpq 会把裸 hostname 直接拿去做 DNS 解析，而 Render 内部 hostname
-# （dpg-xxx-a）没有域名后缀时解析失败，报 could not translate host name。
-# 这里读取后立即规范化，自动补上默认端口 :5432。
+# 读取后立即规范化：内部短名补外部域名 + 补端口 5432（见 _normalize_db_url）。
 DATABASE_URL = _normalize_db_url(os.environ.get("DATABASE_URL", ""))
 try:
     import psycopg2
@@ -484,35 +483,6 @@ def ai_chat(base_url, key, model, messages):
         error_msg = "AI 接口返回 %s：%s" % (status, body[:500])
     log_api_call("AI Chat Error", [], error_msg)
     raise RuntimeError(error_msg)
-
-# ---- 自动修正数据库地址（补端口） ----
-def _normalize_db_url(url):
-    if not url:
-        return url
-    if not url.startswith(("postgres://", "postgresql://")):
-        return url
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-    except Exception:
-        return url
-    
-    host = parsed.hostname or ""
-    port = parsed.port
-    # 已经有端口就直接返回
-    if port:
-        return url
-    
-    # 没端口就补上PostgreSQL默认的5432端口
-    if parsed.username:
-        userinfo = f"{parsed.username}:{parsed.password}@"
-    else:
-        userinfo = ""
-    
-    netloc = f"{userinfo}{host}:5432"
-    path = parsed.path or ""
-    query = f"?{parsed.query}" if parsed.query else ""
-    return f"{parsed.scheme}://{netloc}{path}{query}"
 
 
 # 连接数据库前先自动修正地址
