@@ -19,6 +19,11 @@ services:
       - key: PG_REGION
         sync: false
         # 数据库所在区域，默认 oregon；若你的 Postgres 在其它区域（如 singapore/frankfurt）请填对应值
+      - key: YT_COOKIES
+        sync: false
+        # 可选：YouTube 反爬会要求登录（"Sign in to confirm you're not a bot"）。
+        # 用浏览器插件（如 Get cookies.txt LOCALLY）导出 youtube.com 的 cookies.txt，
+        # 把文件内容整段粘贴到这个变量里，即可绕过。
       - key: AI_API_KEY
         sync: false
       - key: AI_BASE_URL

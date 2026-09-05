@@ -118,6 +118,36 @@ def http_call(method, url, payload=None, headers=None, timeout=40):
         return 0, str(e)
 
 
+_YT_COOKIES_TMP = None
+
+
+def _yt_cookies_file():
+    """返回 yt-dlp 用的 cookies 文件路径；未配置则返回 None。
+
+    YouTube 对数据中心 IP 反爬，未登录抓字幕/取流常报
+    「Sign in to confirm you're not a bot」，需要提供浏览器导出的 cookies。
+    优先读 YT_COOKIES_FILE（指向 cookies.txt 文件路径）；其次读 YT_COOKIES
+    （Netscape 格式 cookies 的完整内容，会写入临时文件缓存复用）。
+    """
+    path = os.environ.get("YT_COOKIES_FILE", "").strip()
+    if path and os.path.isfile(path):
+        return path
+    content = os.environ.get("YT_COOKIES", "").strip()
+    if not content:
+        return None
+    global _YT_COOKIES_TMP
+    if _YT_COOKIES_TMP and os.path.isfile(_YT_COOKIES_TMP):
+        return _YT_COOKIES_TMP
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        _YT_COOKIES_TMP = tmp
+        return tmp
+    except Exception:
+        return None
+
+
 def fetch_subs(url):
     """用 yt-dlp 抓取俄语字幕（含自动生成字幕）。返回 (字幕文本, 错误信息或 None)。"""
     tmp = tempfile.mkdtemp(prefix="ru_subs_")
@@ -130,13 +160,18 @@ def fetch_subs(url):
             "--write-auto-subs", "--write-subs",
             "--sub-langs", "ru",
             "--sub-format", "srt/vtt/best",
-            "-o", out_tmpl, url,
         ]
+        cookies = _yt_cookies_file()
+        if cookies:
+            cmd += ["--cookies", cookies]
+        cmd += ["-o", out_tmpl, url]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
         if proc.returncode != 0:
             detail = (proc.stdout + "\n" + proc.stderr).strip()
             if "No module named" in detail:
                 return None, "未安装 yt-dlp。请运行：python -m pip install yt-dlp"
+            if "Sign in to confirm" in detail:
+                return None, "YouTube 要求登录验证（反爬）：请在 Render 环境变量里配置 YT_COOKIES（浏览器导出的 cookies）"
             return None, "抓取失败：" + detail[-1200:]
         files = [f for f in os.listdir(tmp) if f.endswith((".srt", ".vtt"))]
         if not files:
@@ -163,8 +198,11 @@ def download_audio(url):
         "-f", "bestaudio/best",
         "--no-playlist", "--no-warnings",
         "--retries", "3",
-        "-o", out_tmpl, url,
     ]
+    cookies = _yt_cookies_file()
+    if cookies:
+        cmd += ["--cookies", cookies]
+    cmd += ["-o", out_tmpl, url]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
@@ -175,6 +213,8 @@ def download_audio(url):
         shutil.rmtree(tmp, ignore_errors=True)
         if "No module named" in detail:
             return None, "未安装 yt-dlp。请运行：python -m pip install yt-dlp"
+        if "Sign in to confirm" in detail:
+            return None, "YouTube 要求登录验证（反爬）：请在 Render 环境变量里配置 YT_COOKIES"
         return None, "下载音频失败：" + detail[-800:]
     files = [f for f in os.listdir(tmp)]
     if not files:
@@ -223,11 +263,17 @@ def resolve_stream(url):
     except Exception:
         return None, None, None, "未安装 yt-dlp。请运行：python -m pip install yt-dlp"
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    cookies = _yt_cookies_file()
+    if cookies:
+        opts["cookiefile"] = cookies
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        return None, None, None, "解析视频失败：" + str(e)[:300]
+        msg = str(e)[:300]
+        if "Sign in to confirm" in msg:
+            msg = "YouTube 要求登录验证（反爬）：请在 Render 环境变量里配置 YT_COOKIES"
+        return None, None, None, "解析视频失败：" + msg
 
     formats = info.get("formats") or []
     headers = info.get("http_headers") or {}
