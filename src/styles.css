@@ -41,18 +41,12 @@ button{font-family:inherit;cursor:pointer}
 
 /* ---------- 首页（模式选择） ---------- */
 .home{max-width:1000px;margin:0 auto;padding:48px 24px}
-.home-cards{display:flex;gap:20px;flex-wrap:wrap;justify-content:center}
-.home-card{flex:1;min-width:280px;max-width:440px;background:linear-gradient(135deg,#F5F0EB 0%,#E8E1D9 100%);border:1px solid rgba(139,115,95,0.12);border-radius:999px;padding:34px 28px;cursor:pointer;transition:transform .25s ease,box-shadow .25s ease,background .25s ease;color:#3D332C;box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),inset 0 -1px 0 rgba(0,0,0,0.04),0 4px 12px rgba(139,115,95,0.08)}
-.home-card:hover{transform:translateY(-2px);box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),inset 0 -1px 0 rgba(0,0,0,0.04),0 6px 18px rgba(139,115,95,0.14)}
-.home-card .icon{font-size:44px;margin-bottom:16px}
-.home-card h2{font-size:20px;margin:0 0 6px;font-weight:500}
-.home-card .sub{font-size:15px;color:var(--accent);font-weight:600;margin:0 0 10px}
-.home-card p{color:var(--muted);font-size:14px;margin:0;line-height:1.6}
-/* 主入口：尚雯婕学习法（第1个） */
-.home-card:nth-child(1){background:linear-gradient(135deg,#A98F7A 0%,#8B735F 100%);color:#FFF7F0;border-color:rgba(139,115,95,0.18);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),inset 0 -1px 0 rgba(0,0,0,0.06),0 4px 12px rgba(139,115,95,0.12)}
-.home-card:nth-child(1):hover{background:linear-gradient(135deg,#B39885 0%,#967E69 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),inset 0 -1px 0 rgba(0,0,0,0.06),0 6px 18px rgba(139,115,95,0.18)}
-.home-card:nth-child(1) .sub{color:#FFF7F0}
-.home-card:nth-child(1) p{color:rgba(255,255,255,0.82)}
+.home-cards{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+.home-card{flex:1;min-width:240px;max-width:440px;height:48px;background:var(--accent);border:1px solid rgba(255,255,255,0.18);border-radius:999px;cursor:pointer;transition:transform .25s ease,box-shadow .25s ease,background .25s ease;color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 4px 12px rgba(139,115,95,0.12);display:flex;align-items:center;justify-content:center;padding:0}
+.home-card:hover{background:var(--accent-dark);transform:translateY(-2px);box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 6px 16px rgba(139,115,95,0.16)}
+.home-card:active{transform:translateY(0);box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 2px 8px rgba(139,115,95,0.10)}
+.home-card .icon,.home-card .sub,.home-card p{display:none}
+.home-card h2{font-size:15px;font-weight:500;letter-spacing:.5px;color:#fff;margin:0}
 /* ---------- 课程库 ---------- */
 .course{max-width:820px;margin:0 auto;padding:32px 24px}
 .course h2{font-size:20px;margin:0 0 16px;font-weight:600}
@@ -268,21 +262,13 @@ button{font-family:inherit;cursor:pointer}
 .landing-logo{font-size:56px;line-height:1;margin-bottom:10px}
 .landing-head h1{font-size:32px;margin:0 0 8px;font-weight:600}
 .landing-head p{color:var(--muted);margin:0;font-size:16px}
-.landing-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;width:100%}
-.landing-card{background:linear-gradient(135deg,#F5F0EB 0%,#E8E1D9 100%);border:1px solid rgba(139,115,95,0.12);border-radius:999px;padding:44px 36px;cursor:pointer;transition:transform .25s ease,box-shadow .25s ease,background .25s ease;display:flex;flex-direction:column;align-items:center;text-align:center;color:#3D332C;box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),inset 0 -1px 0 rgba(0,0,0,0.04),0 4px 12px rgba(139,115,95,0.08)}
-.landing-card:hover{transform:translateY(-2px);box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),inset 0 -1px 0 rgba(0,0,0,0.04),0 6px 18px rgba(139,115,95,0.14)}
-.landing-card .icon{font-size:52px;margin-bottom:18px}
-.landing-card h2{font-size:24px;margin:0 0 8px;font-weight:500}
-.landing-card .sub{font-size:16px;color:var(--accent);font-weight:600;margin:0 0 12px}
-.landing-card p{color:var(--muted);font-size:14px;margin:0 0 20px;line-height:1.7}
-.landing-card .go{font-size:14px;color:var(--accent);font-weight:600}
-/* 主入口：分级课程（第2个） */
-.landing-card:nth-child(2){background:linear-gradient(135deg,#A98F7A 0%,#8B735F 100%);color:#FFF7F0;border-color:rgba(139,115,95,0.18);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),inset 0 -1px 0 rgba(0,0,0,0.06),0 4px 12px rgba(139,115,95,0.12)}
-.landing-card:nth-child(2):hover{background:linear-gradient(135deg,#B39885 0%,#967E69 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,0.3),inset 0 -1px 0 rgba(0,0,0,0.06),0 6px 18px rgba(139,115,95,0.18)}
-.landing-card:nth-child(2) .sub{color:#FFF7F0}
-.landing-card:nth-child(2) .go{color:#FFF7F0}
-.landing-card:nth-child(2) p{color:rgba(255,255,255,0.82)}
-@media(max-width:720px){.landing-cards{grid-template-columns:1fr}.landing-card{padding:32px 24px}}
+.landing-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;width:100%}
+.landing-card{height:48px;background:var(--accent);border:1px solid rgba(255,255,255,0.18);border-radius:999px;cursor:pointer;transition:transform .25s ease,box-shadow .25s ease,background .25s ease;color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 4px 12px rgba(139,115,95,0.12);display:flex;align-items:center;justify-content:center;padding:0}
+.landing-card:hover{background:var(--accent-dark);transform:translateY(-2px);box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 6px 16px rgba(139,115,95,0.16)}
+.landing-card:active{transform:translateY(0);box-shadow:inset 0 1px 0 rgba(255,255,255,0.2),0 2px 8px rgba(139,115,95,0.10)}
+.landing-card .icon,.landing-card .sub,.landing-card p,.landing-card .go{display:none}
+.landing-card h2{font-size:15px;font-weight:500;letter-spacing:.5px;color:#fff;margin:0}
+@media(max-width:720px){.landing-cards{grid-template-columns:1fr}}
 
 /* ---------- 尚雯婕学习法（纯文字专注训练） ---------- */
 .method-wrap{max-width:820px;margin:0 auto;padding:24px 20px 60px;display:flex;flex-direction:column;gap:16px}
