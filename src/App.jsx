@@ -30,7 +30,7 @@ export default function App() {
         <Route path="/method" element={<ShangMethod />} />
         <Route path="/method/:level" element={<ShangMethod />} />
         <Route path="/square" element={<SquarePage />} />
-        <Route path="/square/:id" element={<Study />} />
+        <Route path="/square/:videoId" element={<Study />} />
         <Route path="/study/:videoId" element={<Study />} />
         <Route path="/vocab" element={<Vocab />} />
         <Route path="/profile" element={<Profile />} />
