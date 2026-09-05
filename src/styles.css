@@ -237,7 +237,7 @@ button{font-family:inherit;cursor:pointer}
 .rep-sec{margin-top:10px;font-size:14px;line-height:1.8}
 .rep-sec b{color:var(--accent-dark)}
 .rep-ul{margin:4px 0 0;padding-left:20px}
-.chip{display:none}
+.chip{display:inline-block;background:var(--accent-soft);color:var(--muted);border-radius:6px;padding:4px 8px;margin:2px 4px 2px 0;font-size:12px;line-height:1}
 .videos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
 .vc-link{text-decoration:none;color:inherit;display:block}
 .video-card{background:var(--card);border:1px solid var(--border);border-radius:16px;overflow:hidden;transition:box-shadow .25s ease,transform .25s ease;cursor:pointer;box-shadow:var(--shadow)}
@@ -246,10 +246,10 @@ button{font-family:inherit;cursor:pointer}
 .vc-locked .video-card{cursor:not-allowed}
 .vc-locked .video-card:hover{transform:none;box-shadow:none}
 .thumb{aspect-ratio:10/7;background-size:cover;background-position:center;position:relative}
-.thumb-score{display:none}
+.thumb-score{position:absolute;top:8px;right:8px;background:var(--accent);color:#fff;padding:3px 8px;border-radius:6px;font-size:12px;line-height:1}
 .thumb-lock{position:absolute;top:8px;left:8px;font-size:20px}
 .vc-body{padding:12px 14px}
-.vc-title{font-weight:600;margin-bottom:8px;padding:8px 12px;border:1px solid var(--border);border-radius:8px}
+.vc-title{font-weight:600;margin-bottom:4px}
 .vc-meta{font-size:12px;color:var(--muted);margin-bottom:6px}
 .vc-tags{display:flex;gap:4px;flex-wrap:wrap}
 
@@ -293,8 +293,8 @@ button{font-family:inherit;cursor:pointer}
 
 /* ---------- 学习广场 ---------- */
 .square-head{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.square-head h2{font-size:20px;margin:0;flex:1;font-weight:600;padding:8px 16px;border:1px solid var(--border);border-radius:10px}
-.square-cats{display:none}
+.square-head h2{font-size:20px;margin:0;flex:1;font-weight:600}
+.square-cats{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px}
 .cat{padding:8px 6px;border:none;border-radius:0;background:transparent;font-size:15px;color:var(--muted);font-weight:400;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border-bottom:2px solid transparent;transition:color .25s ease,border-color .25s ease}
 .cat:hover{color:var(--text)}
 .cat.active{color:var(--accent);font-weight:500;border-bottom-color:var(--accent)}
