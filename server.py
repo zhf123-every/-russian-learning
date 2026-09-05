@@ -424,11 +424,38 @@ def ai_chat(base_url, key, model, messages):
     log_api_call("AI Chat Error", [], error_msg)
     raise RuntimeError(error_msg)
 
+# ---- 自动修正数据库地址（补端口） ----
+def _normalize_db_url(url):
+    if not url:
+        return url
+    if not url.startswith(("postgres://", "postgresql://")):
+        return url
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    
+    host = parsed.hostname or ""
+    port = parsed.port
+    # 已经有端口就直接返回
+    if port:
+        return url
+    
+    # 没端口就补上PostgreSQL默认的5432端口
+    if parsed.username:
+        userinfo = f"{parsed.username}:{parsed.password}@"
+    else:
+        userinfo = ""
+    
+    netloc = f"{userinfo}{host}:5432"
+    path = parsed.path or ""
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme}://{netloc}{path}{query}"
 
-def _square_conn():
-    url = _normalize_db_url(DATABASE_URL)
-    return psycopg2.connect(url, sslmode="require")
-
+# 连接数据库前先自动修正地址
+    fixed_url = _normalize_db_url(DATABASE_URL)
+    return psycopg2.connect(fixed_url, sslmode="require")
 
 def _square_init():
     if not (_PSYCOPG2_OK and DATABASE_URL):
