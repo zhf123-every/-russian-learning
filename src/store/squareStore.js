@@ -45,7 +45,10 @@ export const useSquareStore = create((set, get) => ({
     })
     const j = await r.json()
     if (!j.ok) throw new Error(j.error || '投稿失败')
-    set(s => ({ serverItems: [item, ...s.serverItems] }))
+    // 服务端持久化成功后，重新拉取服务端列表。
+    // 只更新本地 serverItems 时，其他用户刷新页面看不到新条目；
+    // 这里触发 fetchServer()，让新条目进入所有用户的视图。
+    await get().fetchServer()
     return j
   },
 }))

@@ -40,8 +40,54 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
+
+# ---- 学习广场持久化（Postgres）----
+def _normalize_db_url(url):
+    """修正 Render 从 fromDatabase 注入的 DATABASE_URL 缺失端口问题。
+
+    Render 的 fromDatabase.property=connectionString 有时返回
+    postgres://user:pass@HOST/dbname 的简写形式，HOST 缺少 :5432 端口。
+    libpq 会把裸 hostname 直接拿去做 DNS 解析，而 Render 内部 hostname
+    （dpg-xxx-a）没有域名后缀时解析失败，报：
+        could not translate host name "dpg-xxx-a" to address
+    这里自动补上 :5432 端口，并确保 hostname 完整。
+    """
+    if not url:
+        return url
+    # 只处理 postgres:// / postgresql:// 前缀
+    if not url.startswith(("postgres://", "postgresql://", "psql://")):
+        return url
+    # 用 urllib.parse 解析，避免正则误伤 password 中的特殊字符
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return url
+    host = parsed.hostname or ""
+    port = parsed.port
+    if port:
+        return url  # 已有端口，无需处理
+    # 补端口：5432
+    if parsed.username:
+        userinfo = "%s:%s@" % (parsed.username,
+                              urllib.parse.quote(parsed.password or "", safe=""))
+    else:
+        userinfo = ""
+    netloc = "%s%s:5432" % (userinfo, host)
+    if parsed.path:
+        path = parsed.path
+    else:
+        path = ""
+    query = ("?" + parsed.query) if parsed.query else ""
+    return "%s://%s%s%s" % (parsed.scheme, netloc, path, query)
+
+
 # 数据库（学习广场投稿持久化，Render Postgres 提供 DATABASE_URL）
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Render 的 fromDatabase.property=connectionString 有时返回
+# postgres://user:pass@HOST/dbname 的简写，HOST 缺少 :5432 端口。
+# libpq 会把裸 hostname 直接拿去做 DNS 解析，而 Render 内部 hostname
+# （dpg-xxx-a）没有域名后缀时解析失败，报 could not translate host name。
+# 这里读取后立即规范化，自动补上默认端口 :5432。
+DATABASE_URL = _normalize_db_url(os.environ.get("DATABASE_URL", ""))
 try:
     import psycopg2
     import psycopg2.extras
@@ -379,9 +425,9 @@ def ai_chat(base_url, key, model, messages):
     raise RuntimeError(error_msg)
 
 
-# ---- 学习广场持久化（Postgres）----
 def _square_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    url = _normalize_db_url(DATABASE_URL)
+    return psycopg2.connect(url, sslmode="require")
 
 
 def _square_init():
