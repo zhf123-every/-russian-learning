@@ -43,6 +43,7 @@ export default function Study() {
   const pushRecent = useCourseStore(s => s.pushRecent)
   const progress = useCourseStore(s => s.progress[videoId])
   const submitVideo = useCourseStore(s => s.submitVideo)
+  const fetchServer = useSquareStore(s => s.fetchServer)
   const settings = useSettingsStoreCompat()
 
   const { curIdx, stage, revealed, setIdx, setStage, toggleRevealed } = useSessionStore()
@@ -61,9 +62,19 @@ export default function Study() {
   const [shangDictResult, setShangDictResult] = useState(null)
   const [speed, setSpeed] = useState(settings?.rate || 1.0)
   const [loopMode, setLoopMode] = useState(true)
+  const [triedFetch, setTriedFetch] = useState(false)
+
+  // 直接访问 /square/:id（或刷新）时，先把服务端素材拉下来再判断是否存在
+  useEffect(() => {
+    if (video) { setTriedFetch(true); return }
+    if (triedFetch) { navigate('/'); return }
+    let cancelled = false
+    fetchServer().finally(() => { if (!cancelled) setTriedFetch(true) })
+    return () => { cancelled = true }
+  }, [video, videoId, triedFetch, fetchServer, navigate])
 
   useEffect(() => {
-    if (!video) { navigate('/'); return }
+    if (!video) return
     setAiHtml('')
     setShangUserInput('')
     setShangDictResult(null)

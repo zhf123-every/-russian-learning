@@ -108,7 +108,7 @@ export default function SquarePage() {
             const hasSubs = Array.isArray(item.sentences) && item.sentences.length > 0
             const finished = shang.isFinished(item.id)
             return (
-              <div key={item.id} className="video-card">
+              <div key={item.id} className="video-card" style={{ cursor: 'pointer' }} onClick={() => navigate(`/square/${item.id}`)}>
                 <div className="thumb" style={{ backgroundImage: `url(${item.thumbnail})` }}>
                   <span className="thumb-score">{item.level}</span>
                   {finished && <span className="thumb-score" style={{ background: '#5C8A6B' }}>✓ 尚雯</span>}
@@ -121,14 +121,14 @@ export default function SquarePage() {
                     {hasSubs ? `✓ 有分句字幕 ${item.sentences.length} 句` : '✗ 无分句字幕'}
                   </div>
                   <div className="row" style={{ marginTop: 8, gap: 6 }}>
-                    <button className="btn sm" onClick={() => navigate(`/square/${item.id}`)}>📖 普通学习</button>
+                    <button className="btn sm" onClick={(e) => { e.stopPropagation(); navigate(`/square/${item.id}`) }}>📖 普通学习</button>
                     <button
                       className="btn sm primary"
-                      onClick={() => openShang(item)}
+                      onClick={(e) => { e.stopPropagation(); openShang(item) }}
                       disabled={!hasSubs}
                     >🦜 尚雯婕学习法</button>
                     {isAdmin && (
-                      <button className="btn sm" onClick={() => doDelete(item)}>🗑 删除</button>
+                      <button className="btn sm" onClick={(e) => { e.stopPropagation(); doDelete(item) }}>🗑 删除</button>
                     )}
                   </div>
                 </div>
