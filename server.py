@@ -453,8 +453,9 @@ def _normalize_db_url(url):
     query = f"?{parsed.query}" if parsed.query else ""
     return f"{parsed.scheme}://{netloc}{path}{query}"
 
+
 # 连接数据库前先自动修正地址
-def _normalize_db_url(url):
+def _square_conn():
     fixed_url = _normalize_db_url(DATABASE_URL)
     return psycopg2.connect(fixed_url, sslmode="require")
 
