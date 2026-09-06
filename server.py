@@ -16,6 +16,7 @@
 然后浏览器打开 http://localhost:8000
 """
 
+import base64
 import json
 import os
 import re
@@ -44,7 +45,24 @@ AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
 
-# ---- 学习广场持久化（Postgres）----
+# ---- 视频上传相关（只需配置对象存储）----
+try:
+    from minio import Minio
+    _MINIO_OK = True
+except Exception:
+    _MINIO_OK = False
+
+_minio_client = None
+def _get_minio_client():
+    global _minio_client
+    if _MINIO_OK:
+        if _minio_client is None:
+            endpoint = os.environ.get("MINIO_ENDPOINT")
+            access_key = os.environ.get("MINIO_ACCESS_KEY")
+            secret_key = os.environ.get("MINIO_SECRET_KEY")
+            if endpoint and access_key and secret_key:
+                _minio_client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=True)
+    return _minio_client
 def _normalize_db_url(url):
     """修正 Render 注入的 DATABASE_URL 的两个问题。
 
@@ -612,6 +630,38 @@ def _square_row_to_item(row):
     }
 
 
+# ---- 视频上传相关（只需配置对象存储）----
+try:
+    from minio import Minio
+    _MINIO_OK = True
+except Exception:
+    _MINIO_OK = False
+
+_minio_client = None
+def _get_minio_client():
+    global _minio_client
+    if _minIO_OK:
+        if _minio_client is None:
+            endpoint = os.environ.get("MINIO_ENDPOINT")
+            access_key = os.environ.get("MINIO_ACCESS_KEY")
+            secret_key = os.environ.get("MINIO_SECRET_KEY")
+            if endpoint and access_key and secret_key:
+                _minio_client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=True)
+    return _minio_client
+
+async def _upload_to_minio(file_stream, filename):
+    client = _get_minio_client()
+    if not client:
+        return None, "MINIO 未配置"
+    bucket = os.environ.get("MINIO_BUCKET", "videos")
+    try:
+        client.put_object(bucket, filename, file_stream, length=-1, content_type="video/*")
+        # 返回公共访问 URL（基于 HTTPS 公开访问，MinIO 的 Object Storage 直接支持）
+        return f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}", None
+    except Exception as e:
+        return None, str(e)
+
+
 def _square_list():
     conn = _square_conn()
     try:
@@ -833,7 +883,36 @@ class Handler(BaseHTTPRequestHandler):
         if not (data.get("id") and data.get("title")):
             return self._json(400, {"ok": False, "error": "缺少必填字段"})
         try:
-            _square_submit(data)
+            item = data.copy()
+            # 如果是 base64 编码的视频/缩略图，上传到 MinIO 并替换为 URL
+            client = _get_minio_client()
+            if item.get("videoUrl") and item["videoUrl"].startswith("data:video/"):
+                suffix = ".mp4"
+                fd, local_path = tempfile.mkstemp(suffix=suffix)
+                os.close(fd)
+                with open(local_path, "wb") as f:
+                    f.write(base64.b64decode(item["videoUrl"].split(",", 1)[1]))
+                filename = item["id"] + suffix
+                if client:
+                    bucket = os.environ.get("MINIO_BUCKET", "videos")
+                    client.put_object(bucket, filename, open(local_path, "rb"),
+                                     length=os.path.getsize(local_path), content_type="video/mp4")
+                    item["videoUrl"] = f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}"
+                os.unlink(local_path)
+            if item.get("thumbnail") and item["thumbnail"].startswith("data:image/"):
+                suffix = ".jpg"
+                fd, local_path = tempfile.mkstemp(suffix=suffix)
+                os.close(fd)
+                with open(local_path, "wb") as f:
+                    f.write(base64.b64decode(item["thumbnail"].split(",", 1)[1]))
+                filename = item["id"] + "_thumb" + suffix
+                if client:
+                    bucket = os.environ.get("MINIO_BUCKET", "videos")
+                    client.put_object(bucket, filename, open(local_path, "rb"),
+                                     length=os.path.getsize(local_path), content_type="image/jpeg")
+                    item["thumbnail"] = f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}"
+                os.unlink(local_path)
+            _square_submit(item)
             return self._json(200, {"ok": True})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "保存失败：" + str(e)})
@@ -857,6 +936,44 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
         ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
         return self._json(200, {"ok": ok})
+
+    def _handle_upload(self, data):
+        """直接上传文件（视频/缩略图）到 MinIO，返回公开 URL"""
+        err = self._check_admin(data)
+        if err:
+            return err
+        if not _MINIO_OK:
+            return self._json(500, {
+                "ok": False,
+                "error": "MinIO 未配置，请在 Render 环境变量中设置 MINIO_ENDPOINT / MINIO_ACCESS_KEY / MINIO_SECRET_KEY"
+            })
+        if not (data.get("filename") and data.get("content")):
+            return self._json(400, {"ok": False, "error": "缺少文件数据"})
+        try:
+            import io
+            content_b64 = data["content"]
+            file_stream = io.BytesIO(base64.b64decode(content_b64))
+            client = _get_minio_client()
+            if not client:
+                return self._json(500, {"ok": False, "error": "MinIO 客户端连接失败"})
+            bucket = os.environ.get("MINIO_BUCKET", "videos")
+            if not client.bucket_exists(bucket):
+                client.make_bucket(bucket)
+            filename = data["filename"]
+            content_type = "application/octet-stream"
+            if filename.lower().endswith((".mp4", ".webm", ".mov")):
+                content_type = "video/mp4"
+            elif filename.lower().endswith((".jpg", ".jpeg")):
+                content_type = "image/jpeg"
+            elif filename.lower().endswith(".png"):
+                content_type = "image/png"
+            client.put_object(bucket, filename, file_stream,
+                              length=len(base64.b64decode(content_b64)),
+                              content_type=content_type)
+            url = f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}"
+            return self._json(200, {"ok": True, "url": url})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "上传失败：" + str(e)})
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -957,6 +1074,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": "未配置 AI API Key（请在 Render 环境变量 AI_API_KEY 中设置）"})
                 content = ai_chat(base, key, model, messages)
                 return self._json(200, {"ok": True, "content": content})
+            if path == "/api/upload":
+                return self._handle_upload(data)
             return self._json(404, {"ok": False, "error": "未知接口"})
         except Exception as e:
             return self._json(500, {"ok": False, "error": str(e)})

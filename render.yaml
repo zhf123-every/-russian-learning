@@ -33,3 +33,18 @@ services:
         sync: false
       - key: AI_MODEL
         sync: false
+      # ----- MinIO 对象存储，用于视频/缩略图上传 -----
+      - key: MINIO_ENDPOINT
+        sync: false
+        # 例如：minio.internal.com 或您的 Render 托管的 MinIO 服务地址
+      - key: MINIO_ACCESS_KEY
+        sync: false
+      - key: MINIO_SECRET_KEY
+        sync: false
+      - key: MINIO_BUCKET
+        sync: false
+        # 桶名称，默认值可在代码中配置，保持一致即可
+      - key: MINIO_PUBLIC_URL
+        sync: false
+        # 可选：用于生成视频访问 URL，如果不设置则代码使用默认格式：https://{bucket}.{endpoint}/{filename}
+        # 例如：https://minio.internal.com 或实际可访问的域名
