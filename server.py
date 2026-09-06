@@ -501,8 +501,9 @@ def ru_segment(text):
 try:
     from faster_whisper import WhisperModel as _WhisperModel
     _WHISPER_OK = True
-except Exception:  # 未安装或导入失败
+except Exception as _whisper_err:  # 未安装或导入失败
     _WHISPER_OK = False
+    print("[whisper] faster-whisper 导入失败：", repr(_whisper_err))
 
 _whisper_model = None
 _whisper_model_name = None
