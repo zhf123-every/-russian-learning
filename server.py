@@ -44,6 +44,28 @@ AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
+# ---- CORS 白名单（拆分部署：前端在 Netlify，后端在 Render）----
+# 逗号分隔多个允许的前端域名（如 https://xxx.netlify.app,https://xxx.com）。
+# 留空则沿用旧的 "*" 通配，不改变任何已有行为。
+_ALLOWED_ORIGINS_RAW = os.environ.get("ALLOWED_ORIGIN", "").strip()
+_ALLOWED_ORIGINS = [o.strip() for o in _ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
+# 只有在显式设置了 ALLOWED_ORIGIN 时，才额外放行 localhost 便于本地开发
+if _ALLOWED_ORIGINS:
+    for _dev in ("http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:5173", "http://127.0.0.1:5173"):
+        if _dev not in _ALLOWED_ORIGINS:
+            _ALLOWED_ORIGINS.append(_dev)
+
+
+def _allowed_origin(origin):
+    """返回本次请求应该回写的 Access-Control-Allow-Origin 值，空字符串表示不放行。"""
+    if not _ALLOWED_ORIGINS:
+        return "*"
+    if not origin:
+        return _ALLOWED_ORIGINS[0]
+    if origin in _ALLOWED_ORIGINS:
+        return origin
+    return ""
+
 
 # ---- 视频上传相关（只需配置对象存储）----
 try:
@@ -725,9 +747,12 @@ def _square_delete(item_id):
 
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        ao = _allowed_origin(self.headers.get("Origin") or "")
+        if ao:
+            self.send_header("Access-Control-Allow-Origin", ao)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Content-Length, adminKey")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Vary", "Origin")
 
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
