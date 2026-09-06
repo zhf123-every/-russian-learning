@@ -529,7 +529,7 @@ def _merge_tiny_segments(segs):
     return out
 
 
-def transcribe_file(path, model_name="small"):
+def transcribe_file(path, model_name="tiny"):
     """把视频/音频文件转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
     segments 每项 {start, end, text}（秒）。"""
     if not _WHISPER_OK:
@@ -787,9 +787,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_transcribe(self, data):
         url = (data.get("url") or "").strip()
-        model = (data.get("model") or "small").strip()
-        if model not in ("tiny", "base", "small", "medium"):
-            model = "small"
+        model = (data.get("model") or "tiny").strip()
+        if model not in ("tiny", "base"):
+            model = "tiny"
         if not url:
             return self._json(400, {"ok": False, "error": "缺少视频链接"})
         audio_path, err = download_audio(url)
