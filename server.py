@@ -498,22 +498,32 @@ def ru_segment(text):
 # faster-whisper 是 CTranslate2 版的 Whisper，纯本地、离线、无需 key，
 # 俄语识别质量好、CPU 可跑。其依赖的 PyAV 直接解码视频里的音频轨，
 # 因此无需单独安装系统 ffmpeg。安装：pip install faster-whisper
-try:
-    from faster_whisper import WhisperModel as _WhisperModel
-    _WHISPER_OK = True
-except Exception as _whisper_err:  # 未安装或导入失败
-    _WHISPER_OK = False
-    print("[whisper] faster-whisper 导入失败：", repr(_whisper_err))
-
+# 注意：不在模块顶层 import faster_whisper（其依赖 ctranslate2/av 较重，
+# 顶层 import 会拖慢 server.py 启动、占内存，导致 Render 健康检查超时），
+# 改为首次转写时才懒加载（见 get_whisper_model）。
 _whisper_model = None
 _whisper_model_name = None
+_whisper_import_ok = None       # None=未尝试, True=导入成功, False=导入失败
+_whisper_import_err = None
 
 
 def get_whisper_model(name):
-    """懒加载 + 单例缓存：模型只加载一次，切换模型名时重新加载。"""
-    global _whisper_model, _whisper_model_name
+    """懒加载 + 单例缓存：首次调用时才 import faster-whisper 并加载模型。
+    返回 None 表示 faster-whisper 不可用（未安装或导入失败）。"""
+    global _whisper_model, _whisper_model_name, _whisper_import_ok, _whisper_import_err
+    if _whisper_import_ok is None:
+        try:
+            from faster_whisper import WhisperModel
+            _whisper_import_ok = True
+        except Exception as e:
+            _whisper_import_ok = False
+            _whisper_import_err = repr(e)
+            print("[whisper] faster-whisper 导入失败：", repr(e))
+    if not _whisper_import_ok:
+        return None
     if _whisper_model is None or _whisper_model_name != name:
-        _whisper_model = _WhisperModel(name, device="cpu", compute_type="int8")
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel(name, device="cpu", compute_type="int8")
         _whisper_model_name = name
     return _whisper_model
 
@@ -533,10 +543,10 @@ def _merge_tiny_segments(segs):
 def transcribe_file(path, model_name="tiny"):
     """把视频/音频文件转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
     segments 每项 {start, end, text}（秒）。"""
-    if not _WHISPER_OK:
-        return None, "未安装 faster-whisper。请运行：python -m pip install faster-whisper"
+    model = get_whisper_model(model_name)
+    if model is None:
+        return None, "未安装 faster-whisper（导入失败：%s）。请运行：python -m pip install faster-whisper" % (_whisper_import_err or "未知错误")
     try:
-        model = get_whisper_model(model_name)
         segments, _info = model.transcribe(
             path, language="ru", word_timestamps=True, vad_filter=True
         )
