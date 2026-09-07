@@ -1034,6 +1034,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/health":
+            return self._json(200, {"ok": True})
         if path == "/api/stream":
             return self._handle_stream()
         if path == "/api/square/list":
