@@ -41,10 +41,6 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
-# 音频转写：本地 whisper.cpp（离线，带标点、按语义断句，无需 key / 无需联网）
-WHISPER_CLI = os.environ.get("WHISPER_CLI", "whisper-cli")
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "ggml-tiny.bin")
-
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
@@ -498,18 +494,54 @@ def ru_segment(text):
         return None, False
 
 
-# ---- 音频转写（用本地 whisper.cpp 做俄语语音识别）----
-# whisper.cpp 是 C/C++ 版的 Whisper，预编译二进制 + ggml 模型，纯本地离线、
-# 无需 key、无需联网，输出带标点、按语义断句的 segments（含 start/end 时间戳）。
-# whisper-cli 只接受 16-bit WAV，需先用 ffmpeg 转成 16kHz 单声道（见 _to_wav16k）。
-# 二进制/模型路径由 WHISPER_CLI / WHISPER_MODEL 环境变量指定。
+# ---- 音频转写（用本地 Vosk 做俄语语音识别）----
+# Vosk 是 Kaldi 的离线语音识别，依赖极轻（无 onnxruntime/ctranslate2/torch），
+# 俄语小模型 vosk-model-small-ru-0.22 约 45MB，CPU 可跑、512MB 内存够用。
+# 注意：Vosk 只接受 16kHz 单声道 PCM WAV，需先用 ffmpeg 转码（见 _to_wav16k）；
+# 输出为小写无标点的词流，需按词间时间间隙切成句子（见 _words_to_segments）。
+# 模型目录从环境变量 VOSK_MODEL_PATH 指定；未配置时回退到项目目录下的
+# vosk-model-small-ru-0.22/（本地把模型 zip 解压到这里即可）。
+_vosk_model = None
+_vosk_model_path = None
+_vosk_import_ok = None       # None=未尝试, True=导入成功, False=导入失败
+_vosk_import_err = None
+
+
+def get_vosk_model():
+    """懒加载 + 单例缓存：首次调用时才 import vosk 并加载模型。
+    返回 None 表示 vosk 不可用（未安装、导入失败或模型目录缺失）。"""
+    global _vosk_model, _vosk_model_path, _vosk_import_ok, _vosk_import_err
+    if _vosk_import_ok is None:
+        try:
+            import vosk
+            _vosk_import_ok = True
+        except Exception as e:
+            _vosk_import_ok = False
+            _vosk_import_err = repr(e)
+            print("[vosk] 导入失败：", repr(e))
+    if not _vosk_import_ok:
+        return None
+    model_path = (os.environ.get("VOSK_MODEL_PATH") or "").strip()
+    if not model_path:
+        model_path = os.path.join(BASE_DIR, "vosk-model-small-ru-0.22")
+    if not os.path.isdir(model_path):
+        print("[vosk] 模型目录不存在：", model_path)
+        return None
+    if _vosk_model is None or _vosk_model_path != model_path:
+        import vosk
+        vosk.SetLogLevel(-1)          # 静音 Kaldi 的 [INFO] 日志
+        _vosk_model = vosk.Model(model_path)
+        _vosk_model_path = model_path
+    return _vosk_model
+
+
 def _to_wav16k(src_path):
-    """用 ffmpeg 把任意音频转成 16kHz 单声道 PCM WAV，供 whisper-cli 转写。
+    """用 ffmpeg 把任意音频转成 16kHz 单声道 PCM WAV，供 Vosk 转写。
     返回临时 wav 路径；ffmpeg 缺失或转码失败返回 None。"""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return None
-    fd, dst = tempfile.mkstemp(prefix="whisper_", suffix=".wav")
+    fd, dst = tempfile.mkstemp(prefix="vosk_", suffix=".wav")
     os.close(fd)
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
            "-i", src_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", dst]
@@ -530,45 +562,64 @@ def _to_wav16k(src_path):
     return dst
 
 
-def transcribe_whisper_cpp(wav_path):
-    """用 whisper-cli 把 16kHz WAV 转写成俄语句子列表。返回 (segments, error)。
-    segments 每项 {start, end, text}（秒），文本已带标点。"""
-    cli = shutil.which(WHISPER_CLI)
-    if not cli:
-        cli = WHISPER_CLI
-        if not os.path.isfile(cli):
-            return None, "未找到 whisper-cli（请安装 whisper.cpp 或设置 WHISPER_CLI）"
-    env = dict(os.environ)
-    if os.path.isabs(cli):
-        # 预编译二进制的动态库在同目录，加入 LD_LIBRARY_PATH 让其能加载到
-        libdir = os.path.dirname(cli)
-        env["LD_LIBRARY_PATH"] = libdir + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
-    cmd = [cli, "-m", WHISPER_MODEL, "-l", "ru", "-f", wav_path, "-oj", "-t", "2"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
-    except subprocess.TimeoutExpired:
-        return None, "转写超时，请尝试更短的片段"
-    if proc.returncode != 0:
-        return None, "转写失败：" + (proc.stderr or proc.stdout or "")[-500:]
-    try:
-        obj = json.loads(proc.stdout)
-    except Exception:
-        return None, "解析转写结果失败：" + (proc.stdout or "")[:300]
+def _join_words(cur):
+    """把一组词 {word,start,end} 拼成一句 {start,end,text}。"""
+    return {
+        "start": round(cur[0]["start"], 2),
+        "end": round(cur[-1]["end"], 2),
+        "text": " ".join(w["word"] for w in cur),
+    }
+
+
+def _words_to_segments(words, gap=0.6):
+    """把 Vosk 词级时间戳 [{word,start,end,conf}, ...] 按词间时间间隙切成句子。
+    相邻词间隔 > gap 秒视为句界；每句 {start, end, text}。"""
     segs = []
-    for s in obj.get("transcription") or []:
-        t = (s.get("text") or "").strip()
-        if not t:
+    cur = []
+    for w in words:
+        text = (w.get("word") or "").strip()
+        if not text:
             continue
-        off = s.get("offsets") or {}
-        segs.append({
-            "start": round(float(off.get("from", 0)) / 1000.0, 2),
-            "end": round(float(off.get("to", 0)) / 1000.0, 2),
-            "text": t,
-        })
+        start = float(w.get("start") or 0.0)
+        end = float(w.get("end") or 0.0)
+        if cur and (start - cur[-1]["end"]) > gap:
+            segs.append(_join_words(cur))
+            cur = []
+        cur.append({"word": text, "start": start, "end": end})
+    if cur:
+        segs.append(_join_words(cur))
+    return segs
+
+
+def transcribe_file(path, model_name="small"):
+    """把 16kHz 单声道 WAV 转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
+    segments 每项 {start, end, text}（秒）。model_name 仅为兼容旧调用保留，Vosk 模型固定俄语。"""
+    model = get_vosk_model()
+    if model is None:
+        return None, "Vosk 不可用（导入失败：%s，或模型目录缺失）。请配置 VOSK_MODEL_PATH 指向 vosk 模型目录" % (_vosk_import_err or "未知错误")
+    import vosk
+    import wave
+    try:
+        wf = wave.open(path, "rb")
+        sr = wf.getframerate() or 16000
+        rec = vosk.KaldiRecognizer(model, sr)
+        rec.SetWords(True)
+        try:
+            while True:
+                data = wf.readframes(4000)
+                if not data:
+                    break
+                rec.AcceptWaveform(data)
+        finally:
+            wf.close()
+        final = json.loads(rec.FinalResult())
+    except Exception as e:
+        return None, "转写失败：" + str(e)
+    words = final.get("result") or []
+    if not words:
+        return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
+    segs = _words_to_segments(words)
     if not segs:
-        text = ((obj.get("result") or {}).get("text") or obj.get("text") or "").strip()
-        if text:
-            return [{"start": 0, "end": 0, "text": text}], None
         return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
     return segs, None
 
@@ -818,7 +869,7 @@ class Handler(BaseHTTPRequestHandler):
             if not wav_path:
                 return self._json(200, {"ok": False, "error": "未安装 ffmpeg（转写需 ffmpeg 把音频转成 16kHz）"})
             try:
-                segs, err = transcribe_whisper_cpp(wav_path)
+                segs, err = transcribe_file(wav_path)
                 if err:
                     return self._json(200, {"ok": False, "error": err})
                 return self._json(200, {"ok": True, "segments": segs})

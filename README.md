@@ -9,12 +9,12 @@
 #    yt-dlp          抓 YouTube 字幕
 #    razdel          俄语无标点字幕断句
 #    ffmpeg          视频播放（把 YouTube/B 站分离流重封装成可播放的 mp4）+ 音频转 16kHz
-pip install yt-dlp razdel
+#    vosk           「从音频识别字幕」语音转写（离线，无需 key）
+pip install yt-dlp razdel vosk
 # Windows 装 ffmpeg：winget install ffmpeg；macOS：brew install ffmpeg；Linux：sudo apt install ffmpeg
 
-# 2. （可选）「从音频识别字幕」用本地 whisper.cpp（离线、带标点断句，无需 key）：
-#    下载 whisper.cpp 预编译二进制 whisper-cli 和 ggml-tiny.bin 模型，
-#    设环境变量 WHISPER_CLI / WHISPER_MODEL 指向它们（Render 上 Dockerfile 已自动装好）
+# 2. （可选）下载 Vosk 俄语小模型（~45MB），解压到项目目录（或设环境变量 VOSK_MODEL_PATH 指向它）
+#    https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
 
 # 3. 启动
 python server.py
@@ -29,7 +29,7 @@ python server.py
 1. **导入材料**：点右上「＋ 导入材料」
    - 视频：贴 YouTube 链接，或上传本地视频文件
    - 字幕：点「⚡ 自动抓字幕」自动下载俄语字幕（含自动生成字幕），或手动粘贴 SRT/VTT/纯文本
-   - 没有字幕？点顶栏「🎙 音频识别」，粘贴视频链接 → 自动下载音频并用本地 whisper.cpp 识别成一句句带时间戳的俄语台词（带标点、按语义断句，无需 key）
+   - 没有字幕？点顶栏「🎙 音频识别」，粘贴视频链接 → 自动下载音频并用本地 Vosk 识别成一句句带时间戳的俄语台词（离线，无需 key）
    - 也可以点「用示例数据试试」先体验
 2. **学习**：逐句走三个关卡——`听`（隐藏原文听）、`听写`（打字比对，红字标错）、`跟读`（麦克风识别比对 / 自评）
 3. **点词翻译**：点击台词里的任意俄语单词 → 弹释义 →「＋ 加入生词」
