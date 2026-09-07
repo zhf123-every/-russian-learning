@@ -1044,6 +1044,10 @@ class Handler(BaseHTTPRequestHandler):
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
         if path == "/":
+            # 后端是纯 API（前端已拆分到 Netlify），容器里没有 index.html/legacy.html 时
+            # 让 GET / 返回 200，作为健康检查兜底（Render healthCheckPath 可能仍是 /）
+            if not (os.path.isfile(os.path.join(DIST_DIR, "index.html")) or os.path.isfile(os.path.join(BASE_DIR, "legacy.html"))):
+                return self._json(200, {"ok": True})
             path = "/index.html" if os.path.isfile(os.path.join(serve_dir, "index.html")) else "/legacy.html"
 
         rel = path.lstrip("/")
