@@ -12,11 +12,11 @@ RUN curl -L --fail -o /tmp/whisper.tar.gz https://github.com/ggml-org/whisper.cp
     cp /tmp/wx/*.so* /usr/local/lib/ && \
     ldconfig && \
     rm -rf /tmp/whisper.tar.gz /tmp/wx
-# ggml tiny 模型（~75MB），构建时下载，运行时无需联网
-RUN curl -L --fail -o /app/ggml-tiny.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+# ggml tiny 量化模型（~30MB，q5_1 更省内存），构建时下载，运行时无需联网
+RUN curl -L --fail -o /app/ggml-tiny-q5_1.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin
 COPY server.py ./
 ENV PORT=8000 \
     NO_BROWSER=1 \
-    WHISPER_MODEL=/app/ggml-tiny.bin
+    WHISPER_MODEL=/app/ggml-tiny-q5_1.bin
 EXPOSE 8000
 CMD ["python", "server.py"]

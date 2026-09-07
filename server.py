@@ -543,7 +543,7 @@ def transcribe_whisper_cpp(wav_path):
         # 预编译二进制的动态库在同目录，加入 LD_LIBRARY_PATH 让其能加载到
         libdir = os.path.dirname(cli)
         env["LD_LIBRARY_PATH"] = libdir + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
-    cmd = [cli, "-m", WHISPER_MODEL, "-l", "ru", "-f", wav_path, "-oj"]
+    cmd = [cli, "-m", WHISPER_MODEL, "-l", "ru", "-f", wav_path, "-oj", "-t", "2"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
     except subprocess.TimeoutExpired:
