@@ -1,4 +1,3 @@
 yt-dlp
 razdel
 psycopg2-binary
-faster-whisper

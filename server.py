@@ -41,6 +41,10 @@ AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
 
+# 音频转写：本地 whisper.cpp（离线，带标点、按语义断句，无需 key / 无需联网）
+WHISPER_CLI = os.environ.get("WHISPER_CLI", "whisper-cli")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "ggml-tiny.bin")
+
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
@@ -494,73 +498,79 @@ def ru_segment(text):
         return None, False
 
 
-# ---- 音频转写（用本地 faster-whisper 做俄语语音识别）----
-# faster-whisper 是 CTranslate2 版的 Whisper，纯本地、离线、无需 key，
-# 俄语识别质量好、CPU 可跑。其依赖的 PyAV 直接解码视频里的音频轨，
-# 因此无需单独安装系统 ffmpeg。安装：pip install faster-whisper
-# 注意：不在模块顶层 import faster_whisper（其依赖 ctranslate2/av 较重，
-# 顶层 import 会拖慢 server.py 启动、占内存，导致 Render 健康检查超时），
-# 改为首次转写时才懒加载（见 get_whisper_model）。
-_whisper_model = None
-_whisper_model_name = None
-_whisper_import_ok = None       # None=未尝试, True=导入成功, False=导入失败
-_whisper_import_err = None
-
-
-def get_whisper_model(name):
-    """懒加载 + 单例缓存：首次调用时才 import faster-whisper 并加载模型。
-    返回 None 表示 faster-whisper 不可用（未安装或导入失败）。"""
-    global _whisper_model, _whisper_model_name, _whisper_import_ok, _whisper_import_err
-    if _whisper_import_ok is None:
-        try:
-            from faster_whisper import WhisperModel
-            _whisper_import_ok = True
-        except Exception as e:
-            _whisper_import_ok = False
-            _whisper_import_err = repr(e)
-            print("[whisper] faster-whisper 导入失败：", repr(e))
-    if not _whisper_import_ok:
+# ---- 音频转写（用本地 whisper.cpp 做俄语语音识别）----
+# whisper.cpp 是 C/C++ 版的 Whisper，预编译二进制 + ggml 模型，纯本地离线、
+# 无需 key、无需联网，输出带标点、按语义断句的 segments（含 start/end 时间戳）。
+# whisper-cli 只接受 16-bit WAV，需先用 ffmpeg 转成 16kHz 单声道（见 _to_wav16k）。
+# 二进制/模型路径由 WHISPER_CLI / WHISPER_MODEL 环境变量指定。
+def _to_wav16k(src_path):
+    """用 ffmpeg 把任意音频转成 16kHz 单声道 PCM WAV，供 whisper-cli 转写。
+    返回临时 wav 路径；ffmpeg 缺失或转码失败返回 None。"""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
         return None
-    if _whisper_model is None or _whisper_model_name != name:
-        from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel(name, device="cpu", compute_type="int8")
-        _whisper_model_name = name
-    return _whisper_model
-
-
-def _merge_tiny_segments(segs):
-    """轻量清理：把极短碎片（<3 字符且与上一段间隔很近）并入上一段，其余保持 Whisper 原样。"""
-    out = []
-    for s in segs:
-        if len(s["text"].strip()) < 3 and out and (s["start"] - out[-1]["end"]) < 0.5:
-            out[-1]["end"] = s["end"]
-            out[-1]["text"] = (out[-1]["text"] + " " + s["text"]).strip()
-        else:
-            out.append(s)
-    return out
-
-
-def transcribe_file(path, model_name="tiny"):
-    """把视频/音频文件转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
-    segments 每项 {start, end, text}（秒）。"""
-    model = get_whisper_model(model_name)
-    if model is None:
-        return None, "未安装 faster-whisper（导入失败：%s）。请运行：python -m pip install faster-whisper" % (_whisper_import_err or "未知错误")
+    fd, dst = tempfile.mkstemp(prefix="whisper_", suffix=".wav")
+    os.close(fd)
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+           "-i", src_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", dst]
     try:
-        segments, _info = model.transcribe(
-            path, language="ru", word_timestamps=True, vad_filter=True
-        )
-        out = []
-        for s in segments:
-            t = s.text.strip()
-            if not t:
-                continue
-            out.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": t})
-        if not out:
-            return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
-        return _merge_tiny_segments(out), None
-    except Exception as e:
-        return None, "转写失败：" + str(e)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        return None
+    if proc.returncode != 0:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        return None
+    return dst
+
+
+def transcribe_whisper_cpp(wav_path):
+    """用 whisper-cli 把 16kHz WAV 转写成俄语句子列表。返回 (segments, error)。
+    segments 每项 {start, end, text}（秒），文本已带标点。"""
+    cli = shutil.which(WHISPER_CLI)
+    if not cli:
+        cli = WHISPER_CLI
+        if not os.path.isfile(cli):
+            return None, "未找到 whisper-cli（请安装 whisper.cpp 或设置 WHISPER_CLI）"
+    env = dict(os.environ)
+    if os.path.isabs(cli):
+        # 预编译二进制的动态库在同目录，加入 LD_LIBRARY_PATH 让其能加载到
+        libdir = os.path.dirname(cli)
+        env["LD_LIBRARY_PATH"] = libdir + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    cmd = [cli, "-m", WHISPER_MODEL, "-l", "ru", "-f", wav_path, "-oj"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+    except subprocess.TimeoutExpired:
+        return None, "转写超时，请尝试更短的片段"
+    if proc.returncode != 0:
+        return None, "转写失败：" + (proc.stderr or proc.stdout or "")[-500:]
+    try:
+        obj = json.loads(proc.stdout)
+    except Exception:
+        return None, "解析转写结果失败：" + (proc.stdout or "")[:300]
+    segs = []
+    for s in obj.get("transcription") or []:
+        t = (s.get("text") or "").strip()
+        if not t:
+            continue
+        off = s.get("offsets") or {}
+        segs.append({
+            "start": round(float(off.get("from", 0)) / 1000.0, 2),
+            "end": round(float(off.get("to", 0)) / 1000.0, 2),
+            "text": t,
+        })
+    if not segs:
+        text = ((obj.get("result") or {}).get("text") or obj.get("text") or "").strip()
+        if text:
+            return [{"start": 0, "end": 0, "text": text}], None
+        return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
+    return segs, None
 
 
 def log_api_call(call_type, messages, response=""):
@@ -798,19 +808,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_transcribe(self, data):
         url = (data.get("url") or "").strip()
-        model = (data.get("model") or "tiny").strip()
-        if model not in ("tiny", "base"):
-            model = "tiny"
         if not url:
             return self._json(400, {"ok": False, "error": "缺少视频链接"})
         audio_path, err = download_audio(url)
         if err:
             return self._json(200, {"ok": False, "error": err})
         try:
-            segs, err = transcribe_file(audio_path, model)
-            if err:
-                return self._json(200, {"ok": False, "error": err})
-            return self._json(200, {"ok": True, "segments": segs})
+            wav_path = _to_wav16k(audio_path)
+            if not wav_path:
+                return self._json(200, {"ok": False, "error": "未安装 ffmpeg（转写需 ffmpeg 把音频转成 16kHz）"})
+            try:
+                segs, err = transcribe_whisper_cpp(wav_path)
+                if err:
+                    return self._json(200, {"ok": False, "error": err})
+                return self._json(200, {"ok": True, "segments": segs})
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
         finally:
             shutil.rmtree(os.path.dirname(audio_path), ignore_errors=True)
 
