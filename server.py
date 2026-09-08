@@ -36,10 +36,10 @@ PORT = int(os.environ.get("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, "dist")
 
-# AI 中转配置（密钥/地址从环境变量读取，前端不再持有密钥）
-AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com")
-AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")
+# AI 中转配置：支持多种环境变量名，按优先级 fallback（密钥/地址从环境变量读取，前端不再持有密钥）
+AI_BASE_URL = os.environ.get("AI_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com"
+AI_API_KEY = os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+AI_MODEL = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OPENAI_MODEL") or "deepseek-chat"
 
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
@@ -648,9 +648,13 @@ def ai_chat(base_url, key, model, messages):
     """调用 OpenAI 兼容接口（DeepSeek 等）。返回助手的文本回复。"""
     log_api_call("AI Chat", messages)
     url = base_url.rstrip("/") + "/v1/chat/completions"
+    key_preview = (key[:4] + "***") if key else "(空)"
+    print("[AI] 请求 URL:", url)
+    print("[AI] model:", model, "| messages:", len(messages), "条 | key:", key_preview)
     payload = {"model": model, "messages": messages, "temperature": 0.4, "stream": False}
     headers = {"Authorization": "Bearer " + key}
-    status, body = http_call("POST", url, payload, headers)
+    status, body = http_call("POST", url, payload, headers, timeout=60)
+    print("[AI] 响应 status:", status, "| body前500字:", body[:500])
     if status == 200:
         try:
             obj = json.loads(body)
@@ -1087,6 +1091,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/health":
             return self._json(200, {"ok": True})
+        if path == "/api/ai-health":
+            return self._json(200, {
+                "ok": True,
+                "configured": bool(AI_API_KEY),
+                "base_url": AI_BASE_URL,
+                "model": AI_MODEL,
+                "key_prefix": (AI_API_KEY[:4] + "***") if AI_API_KEY else "",
+            })
         if path == "/api/stream":
             return self._handle_stream()
         if path == "/api/square/list":
@@ -1391,6 +1403,11 @@ if __name__ == "__main__":
     print("  看视频学俄语")
     print("  服务地址：" + url)
     print("  （按 Ctrl+C 退出）")
+    print("=" * 48)
+    print("AI 配置状态：")
+    print("  AI_BASE_URL:", AI_BASE_URL)
+    print("  AI_MODEL:", AI_MODEL)
+    print("  AI_API_KEY:", "已配置 (" + AI_API_KEY[:4] + "***)" if AI_API_KEY else "未配置")
     print("=" * 48)
     if os.environ.get("NO_BROWSER") != "1":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
