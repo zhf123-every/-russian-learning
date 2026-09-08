@@ -1126,6 +1126,175 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._serve_file(full, ctype)
 
+    def _decode_audio_data_url(self, audio_data):
+        """从 data:audio/...;base64,... 中解码出音频字节。返回 (bytes, error)。"""
+        audio_data = (audio_data or "").strip()
+        if not audio_data:
+            return None, "缺少录音数据"
+        try:
+            if "," in audio_data:
+                audio_b64 = audio_data.split(",", 1)[1]
+            else:
+                audio_b64 = audio_data
+            return base64.b64decode(audio_b64), None
+        except Exception as e:
+            return None, "音频解码失败：" + str(e)
+
+    def _transcribe_audio_bytes(self, audio_bytes):
+        """把音频字节保存为临时文件 → ffmpeg 转 WAV → Vosk 转写。
+        返回 (user_text, segments, error)；成功时 error 为 None。
+        所有临时文件在内部清理。"""
+        fd, audio_path = tempfile.mkstemp(prefix="recite_", suffix=".webm")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(audio_bytes)
+        except Exception as e:
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+            return None, None, "保存音频失败：" + str(e)
+
+        wav_path = _to_wav16k(audio_path)
+        if not wav_path:
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+            return None, None, "未安装 ffmpeg（音频转写需 ffmpeg）"
+
+        try:
+            segs, err = transcribe_file(wav_path)
+            if err:
+                return None, None, err
+            user_text = " ".join(s["text"] for s in segs) if segs else ""
+            if not user_text:
+                return None, None, "未识别到语音内容，请重新录音"
+            return user_text, segs, None
+        finally:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+
+    def _handle_transcribe_audio(self, data):
+        """独立音频转写接口：接收 base64 音频，返回转写文本和分段。"""
+        audio_bytes, err = self._decode_audio_data_url(data.get("audio"))
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+        user_text, segs, err = self._transcribe_audio_bytes(audio_bytes)
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+        return self._json(200, {"ok": True, "text": user_text, "segments": segs})
+
+    def _handle_recite_compare(self, data):
+        """录音转写 + AI 文本比对接口。"""
+        standard = (data.get("standard") or "").strip()
+        if not standard:
+            return self._json(200, {"ok": False, "error": "缺少标准原文"})
+
+        audio_bytes, err = self._decode_audio_data_url(data.get("audio"))
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+
+        user_text, _segs, err = self._transcribe_audio_bytes(audio_bytes)
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+
+        # 未配置 AI Key：降级仅返回转写文本
+        if not AI_API_KEY:
+            return self._json(200, {"ok": True, "result": {
+                "user_text": user_text,
+                "errors": [],
+                "overall_tip": "未配置 AI API Key，仅返回转写文本，无法做智能比对。",
+            }})
+
+        compare_prompt = """你是俄语发音评估专家。请将【用户朗读文本】与【标准原文】逐词比对，找出所有差异。
+
+标准原文：%s
+
+用户朗读：%s
+
+请严格以JSON格式返回（不要输出JSON以外的任何文字），格式如下：
+{
+  "errors": [
+    {
+      "type": "misread",
+      "original": "原文中的词或短语",
+      "user": "用户实际读的词",
+      "suggestion": "用中文说明错误原因和修正方法",
+      "correct_reading": "正确的俄语读法"
+    }
+  ],
+  "overall_tip": "用中文给出整体学习建议，包括发音、语调、流利度等方面"
+}
+
+错误类型type只能是以下四种之一：
+- misread：读错（发音、词尾、重音错误）
+- omitted：漏读（原文有但用户没读）
+- extra：多读（用户读了原文没有的词）
+- word_order：语序错误
+
+如果没有错误，errors返回空数组，overall_tip给出肯定和提升建议。
+""" % (standard, user_text)
+
+        messages = [
+            {"role": "system", "content": "你是严格的俄语发音评估专家，只输出JSON。"},
+            {"role": "user", "content": compare_prompt},
+        ]
+        try:
+            ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+        except RuntimeError as e:
+            return self._json(200, {"ok": True, "result": {
+                "user_text": user_text,
+                "errors": [],
+                "overall_tip": "AI比对失败（" + str(e)[:100] + "），以下为转写文本。",
+            }})
+        except Exception as e:
+            return self._json(200, {"ok": True, "result": {
+                "user_text": user_text,
+                "errors": [],
+                "overall_tip": "AI比对异常：" + str(e)[:100],
+            }})
+
+        # 容错解析 AI 返回的 JSON
+        errors = []
+        overall_tip = ""
+        try:
+            resp = ai_response.strip()
+            resp = re.sub(r'^```(?:json)?\s*', '', resp, flags=re.I)
+            resp = re.sub(r'\s*```$', '', resp)
+            a = resp.find("{")
+            b = resp.rfind("}")
+            if a >= 0 and b > a:
+                resp = resp[a:b + 1]
+            parsed = json.loads(resp)
+            raw_errors = parsed.get("errors", [])
+            overall_tip = parsed.get("overall_tip", "")
+            valid_errors = []
+            for e in raw_errors:
+                if isinstance(e, dict) and e.get("type") in ("misread", "omitted", "extra", "word_order"):
+                    valid_errors.append({
+                        "type": e.get("type", ""),
+                        "original": e.get("original", ""),
+                        "user": e.get("user", ""),
+                        "suggestion": e.get("suggestion", ""),
+                        "correct_reading": e.get("correct_reading", ""),
+                    })
+            errors = valid_errors
+        except Exception:
+            overall_tip = "AI返回解析失败，原始回复：" + ai_response[:200]
+
+        return self._json(200, {"ok": True, "result": {
+            "user_text": user_text,
+            "errors": errors,
+            "overall_tip": overall_tip,
+        }})
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         data = self._read_json()
@@ -1167,22 +1336,36 @@ class Handler(BaseHTTPRequestHandler):
                 if not sentence:
                     return self._json(400, {"ok": False, "error": "缺少句子"})
                 if not AI_API_KEY:
-                    return self._json(400, {"ok": False, "error": "未配置 AI API Key（请在 Render 环境变量 AI_API_KEY 中设置）"})
+                    return self._json(200, {"ok": False, "error": "未配置 AI API Key（请在环境变量 AI_API_KEY 中设置）"})
                 messages = [
                     {"role": "system", "content": "你是俄语老师。逐词解析这句俄语：原形、词性、语法功能、整句中文翻译。用简洁中文，适当用列表。"},
                     {"role": "user", "content": sentence},
                 ]
-                content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
-                return self._json(200, {"ok": True, "content": content})
+                try:
+                    content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+                    return self._json(200, {"ok": True, "content": content})
+                except RuntimeError as e:
+                    return self._json(200, {"ok": False, "error": str(e)})
+                except Exception as e:
+                    return self._json(200, {"ok": False, "error": "语法解析异常：" + str(e)})
             if path == "/api/ai":
                 base = (data.get("baseUrl") or AI_BASE_URL).strip()
                 key = (data.get("key") or AI_API_KEY).strip()
                 model = (data.get("model") or AI_MODEL).strip()
                 messages = data.get("messages") or []
                 if not key:
-                    return self._json(400, {"ok": False, "error": "未配置 AI API Key（请在 Render 环境变量 AI_API_KEY 中设置）"})
-                content = ai_chat(base, key, model, messages)
-                return self._json(200, {"ok": True, "content": content})
+                    return self._json(200, {"ok": False, "error": "未配置 AI API Key（请在环境变量 AI_API_KEY 中设置）"})
+                try:
+                    content = ai_chat(base, key, model, messages)
+                    return self._json(200, {"ok": True, "content": content})
+                except RuntimeError as e:
+                    return self._json(200, {"ok": False, "error": str(e)})
+                except Exception as e:
+                    return self._json(200, {"ok": False, "error": "AI请求异常：" + str(e)})
+            if path == "/api/recite-compare":
+                return self._handle_recite_compare(data)
+            if path == "/api/transcribe-audio":
+                return self._handle_transcribe_audio(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             return self._json(404, {"ok": False, "error": "未知接口"})
