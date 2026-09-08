@@ -1307,6 +1307,308 @@ class Handler(BaseHTTPRequestHandler):
             "overall_tip": overall_tip,
         }})
 
+    def _parse_ai_json(self, text):
+        """三层容错解析 AI 返回的 JSON：去 markdown 代码块 → 提取最外层花括号 → json.loads。"""
+        text = (text or "").strip()
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.I)
+        text = re.sub(r'\s*```$', '', text)
+        a = text.find("{")
+        b = text.rfind("}")
+        if a >= 0 and b > a:
+            text = text[a:b + 1]
+        return json.loads(text)
+
+    def _handle_generate_quiz(self, data):
+        """根据文章句子生成30道AI测验题。"""
+        sentences = data.get("sentences") or []
+        if not isinstance(sentences, list) or len(sentences) == 0:
+            return self._json(200, {"ok": False, "error": "sentences 必须是非空数组"})
+        if not AI_API_KEY:
+            return self._json(200, {"ok": False, "error": "未配置AI API Key，无法生成测验"})
+
+        title = (data.get("title") or "").strip()
+
+        # 构造文章文本（逐句编号列出）
+        lines = []
+        for i, s in enumerate(sentences, 1):
+            ru = (s.get("russian") or "").strip()
+            cn = (s.get("chinese") or "").strip()
+            lines.append("%d. %s — %s" % (i, ru, cn))
+        article_text = "\n".join(lines)
+
+        prompt = """你是俄语测验出题专家。请根据以下俄语文章内容，生成30道测验题。
+
+文章标题：%s
+文章内容：
+%s
+
+请严格按以下题型和数量生成：
+1. 词汇选择题（5道）：从文章中选重点单词，4选1选择正确中文释义
+2. 语法填空题（5道）：从文章中选句子，挖空关键语法点，4选1选择正确形式
+3. 语法选择题（5道）：基于文章中出现的语法点，出语法规则选择题，4选1
+4. 俄译中（5道）：从文章中选句子，给出参考中文翻译
+5. 中译俄（5道）：基于文章内容，给中文句子，给出参考俄语翻译
+6. 自主造句（3道）：给定文章重点单词，让用户造句
+7. 阅读理解（2道）：关于文章内容的理解问题，给出参考答案
+
+请严格以JSON格式返回（不要输出JSON以外的任何文字），格式如下：
+{
+  "quiz": [
+    {"id": 1, "type": "vocab_mcq", "question": "...", "options": ["A","B","C","D"], "answer": 0, "explanation": "..."},
+    ...
+  ]
+}
+
+要求：
+- id 从1到30连续编号
+- 选择题的 answer 是正确选项的索引（0-3）
+- 主观题（ru_to_cn, cn_to_ru, sentence_creation, reading_comprehension）的 options 字段省略，answer 存参考答案（造句题answer为空字符串）
+- 题目必须基于文章内容，不能凭空编造
+- 难度控制在A1-A2级别
+- explanation 用简洁中文
+""" % (title, article_text)
+
+        messages = [
+            {"role": "system", "content": "你是严格的俄语测验出题专家，只输出JSON。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+        except RuntimeError as e:
+            return self._json(200, {"ok": False, "error": "AI生成失败：" + str(e)})
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "AI生成异常：" + str(e)})
+
+        try:
+            parsed = self._parse_ai_json(ai_response)
+            quiz = parsed.get("quiz", [])
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "AI返回解析失败：" + str(e)[:200]})
+
+        if not isinstance(quiz, list) or len(quiz) != 30:
+            actual = len(quiz) if isinstance(quiz, list) else 0
+            return self._json(200, {"ok": False, "error": "生成的题目数量不足30道（实际%d道），请重试" % actual})
+
+        # 规范化每道题的字段
+        normalized = []
+        for q in quiz:
+            if not isinstance(q, dict):
+                continue
+            item = {
+                "id": q.get("id"),
+                "type": q.get("type", ""),
+                "question": q.get("question", ""),
+                "explanation": q.get("explanation", ""),
+                "answer": q.get("answer", ""),
+            }
+            if q.get("options") is not None:
+                item["options"] = q["options"]
+            normalized.append(item)
+
+        return self._json(200, {"ok": True, "quiz": normalized})
+
+    def _handle_grade_quiz(self, data):
+        """根据用户答案和正确答案，AI评分主观题 + 自动判分选择题，返回总分和详情。"""
+        quiz = data.get("quiz") or []
+        user_answers = data.get("userAnswers") or {}
+        sentences = data.get("sentences") or []
+
+        if not isinstance(quiz, list) or len(quiz) == 0:
+            return self._json(200, {"ok": False, "error": "quiz 必须是非空数组"})
+        if not isinstance(user_answers, dict):
+            return self._json(200, {"ok": False, "error": "userAnswers 必须是对象"})
+
+        auto_types = {'vocab_mcq', 'grammar_fill', 'grammar_mcq'}
+        subjective_types = {'ru_to_cn', 'cn_to_ru', 'sentence_creation', 'reading_comprehension'}
+
+        details = []
+        auto_score = 0.0
+        subjective_questions = []
+        type_stats = {}  # type -> {"correct": int, "total": int}
+
+        # 第一步：自动判分选择题，收集主观题
+        for q in quiz:
+            qid = q.get("id")
+            qtype = q.get("type", "")
+            user_ans = user_answers.get(str(qid))
+
+            if qtype not in type_stats:
+                type_stats[qtype] = {"correct": 0, "total": 0}
+            type_stats[qtype]["total"] += 1
+
+            if qtype in auto_types:
+                correct = q.get("answer")
+                is_correct = (user_ans == correct)
+                if is_correct:
+                    auto_score += 1
+                    type_stats[qtype]["correct"] += 1
+                details.append({
+                    "id": qid,
+                    "type": qtype,
+                    "userAnswer": user_ans,
+                    "correctAnswer": correct,
+                    "score": 1 if is_correct else 0,
+                    "explanation": q.get("explanation", ""),
+                })
+            elif qtype in subjective_types:
+                subjective_questions.append(q)
+            else:
+                # 未知题型：按0分处理，不阻塞整体评分
+                details.append({
+                    "id": qid,
+                    "type": qtype,
+                    "userAnswer": user_ans,
+                    "correctAnswer": q.get("answer", ""),
+                    "score": 0,
+                    "explanation": q.get("explanation", ""),
+                })
+
+        # 第二步：主观题评分（AI 或降级默认分）
+        ai_scores = {}  # id -> {"score": float, "explanation": str}
+        suggestion = ""
+
+        if not AI_API_KEY:
+            # 未配置AI：选择题正常判分，主观题全部给0.5默认分
+            for q in subjective_questions:
+                qid = q.get("id")
+                ai_scores[qid] = {"score": 0.5, "explanation": "未配置AI，主观题为默认评分"}
+            suggestion = "未配置AI，主观题未评分（默认给0.5分）。配置AI_API_KEY后可获得精准评分。"
+        else:
+            # 构造文章文本
+            art_lines = []
+            for i, s in enumerate(sentences, 1):
+                ru = (s.get("russian") or "").strip()
+                cn = (s.get("chinese") or "").strip()
+                art_lines.append("%d. %s — %s" % (i, ru, cn))
+            article_text = "\n".join(art_lines) if art_lines else "(未提供文章句子)"
+
+            # 构造主观题列表
+            subj_lines = []
+            for q in subjective_questions:
+                qid = q.get("id")
+                qtype = q.get("type", "")
+                question = q.get("question", "")
+                user_ans = user_answers.get(str(qid), "(未作答)")
+                ref_ans = q.get("answer", "(开放题)")
+                subj_lines.append(
+                    "题号%s（%s）：\n题目：%s\n用户答案：%s\n参考答案：%s\n"
+                    % (qid, qtype, question, user_ans, ref_ans)
+                )
+            subj_text = "\n".join(subj_lines) if subj_lines else "(无主观题)"
+
+            grade_prompt = """你是俄语测验评分专家。请根据以下用户答案和参考答案，对主观题进行评分。
+
+文章内容：%s
+
+需要评分的主观题：
+%s
+
+请严格以JSON格式返回（不要输出JSON以外的任何文字）：
+{
+  "scores": [
+    {"id": 16, "score": 0.8, "explanation": "翻译基本正确，但用词不够精准"},
+    ...
+  ],
+  "suggestion": "整体翻译能力不错，建议加强..."
+}
+
+评分标准：
+- 1.0分：完全正确，表达自然
+- 0.8分：基本正确，有小瑕疵（用词不够精准、语法小错）
+- 0.5分：部分正确，有明显错误但能理解意思
+- 0.2分：大部分错误，仅能看出个别词汇
+- 0分：完全错误或未作答
+""" % (article_text, subj_text)
+
+            messages = [
+                {"role": "system", "content": "你是严格的俄语测验评分专家，只输出JSON。"},
+                {"role": "user", "content": grade_prompt},
+            ]
+
+            try:
+                ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+                parsed = self._parse_ai_json(ai_response)
+                raw_scores = parsed.get("scores", [])
+                suggestion = parsed.get("suggestion", "")
+                for s in raw_scores:
+                    if isinstance(s, dict) and s.get("id") is not None:
+                        try:
+                            sc = float(s.get("score", 0))
+                            sc = max(0.0, min(1.0, sc))
+                        except (TypeError, ValueError):
+                            sc = 0.0
+                        ai_scores[s["id"]] = {
+                            "score": sc,
+                            "explanation": s.get("explanation", ""),
+                        }
+            except Exception as e:
+                # AI评分失败：主观题给0.5默认分，不阻塞整体返回
+                for q in subjective_questions:
+                    qid = q.get("id")
+                    ai_scores[qid] = {
+                        "score": 0.5,
+                        "explanation": "AI评分失败（%s），默认给0.5分" % str(e)[:80],
+                    }
+                suggestion = "AI评分失败，主观题为默认评分。错误：" + str(e)[:100]
+
+        # 第三步：合并主观题得分到 details，计算总分
+        subjective_score = 0.0
+        for q in subjective_questions:
+            qid = q.get("id")
+            qtype = q.get("type", "")
+            user_ans = user_answers.get(str(qid))
+            sc_info = ai_scores.get(qid, {"score": 0.0, "explanation": ""})
+            sc = sc_info["score"]
+            subjective_score += sc
+            if sc >= 0.5:
+                type_stats[qtype]["correct"] += 1
+            details.append({
+                "id": qid,
+                "type": qtype,
+                "userAnswer": user_ans,
+                "correctAnswer": q.get("answer", ""),
+                "score": sc,
+                "explanation": sc_info.get("explanation") or q.get("explanation", ""),
+            })
+
+        # 按题号排序 details
+        details.sort(key=lambda d: (d.get("id") is None, d.get("id", 0)))
+
+        # 第四步：计算总分和通过状态
+        total_questions = len(quiz)
+        total_score = auto_score + subjective_score
+        score_percent = round(total_score / total_questions * 100) if total_questions > 0 else 0
+
+        # 通过标准：>=80 优秀通过，60-79 勉强通过，<60 不通过
+        if score_percent >= 80:
+            pass_flag = True
+            if not suggestion:
+                suggestion = "成绩优秀！继续保持，可以挑战更高难度的内容。"
+        elif score_percent >= 60:
+            pass_flag = True
+            if not suggestion:
+                suggestion = "勉强通过，建议复习错题对应的语法点和词汇，巩固基础后再试一次。"
+        else:
+            pass_flag = False
+            if not suggestion:
+                suggestion = "未通过，建议重新学习文章内容，重点掌握基础词汇和语法变化后再测验。"
+
+        # 构造各题型得分统计
+        breakdown = {}
+        for t, st in type_stats.items():
+            breakdown[t] = {"correct": st["correct"], "total": st["total"]}
+
+        result = {
+            "score": score_percent,
+            "pass": pass_flag,
+            "breakdown": breakdown,
+            "details": details,
+            "suggestion": suggestion,
+        }
+
+        return self._json(200, {"ok": True, "result": result})
+
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         data = self._read_json()
@@ -1350,28 +1652,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not AI_API_KEY:
                     return self._json(200, {"ok": False, "error": "未配置 AI API Key（请在环境变量 AI_API_KEY 中设置）"})
                 messages = [
-                    {"role": "system", "content": """你是资深俄语老师。请对用户输入的俄语句子做完整解析，用简洁中文，Markdown格式，按以下结构输出：
-
-## 📖 整句翻译
-给出整句的中文翻译。
-
-## 🔤 逐词解析
-用表格或列表，逐词列出：原形、词性、在句中的语法功能、中文释义。
-
-## 🔍 语法拆分
-列出这个句子用到的**所有语法点**（如：名词第二格、动词过去时、形容词短尾、前置词+格、句型结构等），每个语法点单独说明。
-
-### 每个语法点包含：
-- **语法点名称**：如"名词第二格"
-- **句中体现**：指出句中哪个词/结构体现了这个语法
-- **为什么这么用**：解释这个语法在这里的作用和原因
-- **什么时候用**：说明这个语法的使用场景、条件和规则
-- **类似例句**：给1-2个使用相同语法的俄语例句，配中文翻译
-
-## 💡 学习提示
-给出1-2条针对这个句子的学习建议或记忆技巧。
-
-如果句子很简单没有复杂语法，也要如实说明，并给出基础语法点的解释。"""},
+                    {"role": "system", "content": "你是俄语老师。逐词解析这句俄语：原形、词性、语法功能、整句中文翻译。用简洁中文，适当用列表。"},
                     {"role": "user", "content": sentence},
                 ]
                 try:
@@ -1401,6 +1682,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_transcribe_audio(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
+            if path == "/api/generate-quiz":
+                return self._handle_generate_quiz(data)
+            if path == "/api/grade-quiz":
+                return self._handle_grade_quiz(data)
             return self._json(404, {"ok": False, "error": "未知接口"})
         except Exception as e:
             return self._json(500, {"ok": False, "error": str(e)})
