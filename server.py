@@ -645,9 +645,13 @@ def log_api_call(call_type, messages, response=""):
 
 
 def ai_chat(base_url, key, model, messages):
-    """调用 OpenAI 兼容接口（DeepSeek 等）。返回助手的文本回复。"""
+    """调用 OpenAI 兼容接口（DeepSeek、智谱等）。返回助手的文本回复。"""
     log_api_call("AI Chat", messages)
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    # 智能适配：智谱AI用 /chat/completions，DeepSeek等用 /v1/chat/completions
+    if "bigmodel.cn" in base_url or "z.ai" in base_url:
+        url = base_url.rstrip("/") + "/chat/completions"
+    else:
+        url = base_url.rstrip("/") + "/v1/chat/completions"
     key_preview = (key[:4] + "***") if key else "(空)"
     print("[AI] 请求 URL:", url)
     print("[AI] model:", model, "| messages:", len(messages), "条 | key:", key_preview)
