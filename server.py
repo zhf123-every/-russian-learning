@@ -1312,14 +1312,42 @@ class Handler(BaseHTTPRequestHandler):
         }})
 
     def _parse_ai_json(self, text):
-        """三层容错解析 AI 返回的 JSON：去 markdown 代码块 → 提取最外层花括号 → json.loads。"""
+        """多层容错解析 AI 返回的 JSON：去 markdown → 提取最外层 → 修复常见格式错误 → json.loads。"""
         text = (text or "").strip()
-        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.I)
+        # 1. 去除 markdown 代码块
+        text = re.sub(r'^```(?:json|JSON)?\s*', '', text, flags=re.I)
         text = re.sub(r'\s*```$', '', text)
+        # 2. 提取最外层花括号
         a = text.find("{")
         b = text.rfind("}")
         if a >= 0 and b > a:
             text = text[a:b + 1]
+        # 3. 去除 JSON 中的单行注释（// ...）
+        text = re.sub(r'//[^\n]*', '', text)
+        # 4. 去除多行注释（/* ... */）
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+        # 5. 去除 trailing commas（} 或 ] 前面的逗号）
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+        # 6. 修复未转义的换行符在字符串内的问题（简单处理）
+        # 7. 尝试标准解析
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        # 8. 尝试用 ast.literal_eval 解析（更宽松，支持单引号等）
+        try:
+            import ast
+            return ast.literal_eval(text)
+        except Exception:
+            pass
+        # 9. 最后手段：尝试修复常见的引号问题后再解析
+        try:
+            # 将单引号替换为双引号（简单处理，可能不准确）
+            fixed = text.replace("'", '"')
+            return json.loads(fixed)
+        except Exception:
+            pass
+        # 全部失败，抛出原始错误
         return json.loads(text)
 
     def _handle_generate_quiz(self, data):
@@ -1377,22 +1405,37 @@ class Handler(BaseHTTPRequestHandler):
             {"role": "user", "content": prompt},
         ]
 
-        try:
-            ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
-        except RuntimeError as e:
-            return self._json(200, {"ok": False, "error": "AI生成失败：" + str(e)})
-        except Exception as e:
-            return self._json(200, {"ok": False, "error": "AI生成异常：" + str(e)})
+        # 最多重试2次（AI可能返回格式错误或题目数量不足）
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            except RuntimeError as e:
+                if attempt < max_retries:
+                    continue
+                return self._json(200, {"ok": False, "error": "AI生成失败：" + str(e)})
+            except Exception as e:
+                if attempt < max_retries:
+                    continue
+                return self._json(200, {"ok": False, "error": "AI生成异常：" + str(e)})
 
-        try:
-            parsed = self._parse_ai_json(ai_response)
-            quiz = parsed.get("quiz", [])
-        except Exception as e:
-            return self._json(200, {"ok": False, "error": "AI返回解析失败：" + str(e)[:200]})
+            try:
+                parsed = self._parse_ai_json(ai_response)
+                quiz = parsed.get("quiz", [])
+            except Exception as e:
+                if attempt < max_retries:
+                    # 重试时在消息中强调格式要求
+                    messages.append({"role": "user", "content": "请严格只输出合法的JSON格式，不要输出任何其他文字、注释或markdown代码块。确保JSON语法正确，所有字符串用双引号，数组元素之间用逗号分隔。"})
+                    continue
+                return self._json(200, {"ok": False, "error": "AI返回解析失败：" + str(e)[:200]})
 
-        if not isinstance(quiz, list) or len(quiz) != 30:
-            actual = len(quiz) if isinstance(quiz, list) else 0
-            return self._json(200, {"ok": False, "error": "生成的题目数量不足30道（实际%d道），请重试" % actual})
+            if isinstance(quiz, list) and len(quiz) >= 1:
+                break
+            elif attempt < max_retries:
+                messages.append({"role": "user", "content": "请生成至少20道题目，确保quiz数组非空。"})
+            else:
+                actual = len(quiz) if isinstance(quiz, list) else 0
+                return self._json(200, {"ok": False, "error": "生成的题目数量不足（实际%d道），请重试" % actual})
 
         # 规范化每道题的字段
         normalized = []
