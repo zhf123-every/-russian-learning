@@ -1429,13 +1429,13 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 return self._json(200, {"ok": False, "error": "AI返回解析失败：" + str(e)[:200]})
 
-            if isinstance(quiz, list) and len(quiz) >= 1:
+            if isinstance(quiz, list) and len(quiz) >= 15:
                 break
             elif attempt < max_retries:
-                messages.append({"role": "user", "content": "请生成至少20道题目，确保quiz数组非空。"})
+                messages.append({"role": "user", "content": "请生成完整的30道题目，确保quiz数组包含30个元素，每个元素格式正确。"})
             else:
                 actual = len(quiz) if isinstance(quiz, list) else 0
-                return self._json(200, {"ok": False, "error": "生成的题目数量不足（实际%d道），请重试" % actual})
+                return self._json(200, {"ok": False, "error": "生成的题目数量不足15道（实际%d道），请重试" % actual})
 
         # 规范化每道题的字段
         normalized = []
@@ -1453,7 +1453,7 @@ class Handler(BaseHTTPRequestHandler):
                 item["options"] = q["options"]
             normalized.append(item)
 
-        return self._json(200, {"ok": True, "quiz": normalized})
+        return self._json(200, {"ok": True, "quiz": normalized, "total": len(normalized)})
 
     def _handle_grade_quiz(self, data):
         """根据用户答案和正确答案，AI评分主观题 + 自动判分选择题，返回总分和详情。"""
