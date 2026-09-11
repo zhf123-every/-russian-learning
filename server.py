@@ -393,14 +393,28 @@ def _build_ffmpeg_cmd(payload, headers, ffmpeg="ffmpeg"):
 
 
 def dict_lookup(word):
-    """MyMemory 免费翻译接口（俄→中），无需 key。返回译文文本或 None。"""
+    """MyMemory 免费翻译接口（俄→中），无需 key。返回译文文本或 None。
+    MyMemory 对数据中心 IP 可能限流/失败，失败时用 AI 兜底翻译。"""
     q = urllib.parse.quote(word)
     url = "https://api.mymemory.translated.net/get?q=%s&langpair=ru|zh-CN" % q
     status, body = http_call("GET", url, timeout=30)
     if status == 200:
         try:
             obj = json.loads(body)
-            return obj.get("responseData", {}).get("translatedText") or None
+            t = obj.get("responseData", {}).get("translatedText") or None
+            if t:
+                return t
+        except Exception:
+            pass
+    # —— AI 兜底：MyMemory 失败/限流时用已配置的大模型翻译 ——
+    if AI_API_KEY:
+        try:
+            content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, [
+                {"role": "system", "content": "你是俄汉词典。用户输入一个俄语单词（可能是变格/变位形式），请给出：原形、词性、中文释义。只输出一行，格式：【原形】词性 中文释义。若无法确定，给出最可能的解释。"},
+                {"role": "user", "content": word},
+            ])
+            if content and content.strip():
+                return content.strip()
         except Exception:
             return None
     return None
