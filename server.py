@@ -17,6 +17,7 @@
 """
 
 import base64
+import io
 import json
 import os
 import re
@@ -1203,15 +1204,64 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    # ---- edge-tts（微软Edge神经语音，免费、无需API Key、无需torch）----
+    # 俄语女声 ru-RU-SvetlanaNeural：微软官方俄语标杆声音，自然流畅
+    TTS_VOICE = "ru-RU-SvetlanaNeural"
+
+    def _tts_edge(self, text):
+        """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。"""
+        try:
+            import asyncio
+            import edge_tts
+            last_err = None
+            # 最多重试3次，应对网络抖动
+            for attempt in range(3):
+                try:
+                    communicate = edge_tts.Communicate(text, self.TTS_VOICE)
+                    chunks = []
+
+                    async def _collect():
+                        async for chunk in communicate.stream():
+                            if chunk.get("type") == "audio":
+                                chunks.append(chunk["data"])
+
+                    asyncio.run(_collect())
+                    if chunks:
+                        return b"".join(chunks)
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        import time
+                        time.sleep(1)  # 退避1秒后重试
+            print("[TTS] edge-tts 生成失败：", last_err)
+            return None
+        except Exception as e:
+            print("[TTS] edge-tts 异常：", e)
+            return None
+
     def _handle_tts(self, text):
-        """TTS文本转语音：调用Google翻译免费TTS，返回俄语音频（audio/mpeg）。
+        """TTS文本转语音：优先使用 edge-tts 微软神经语音（mp3），失败时回退 Google TTS（mp3）。
         用于浏览器没有俄语语音包时的降级方案。
         """
         if not text:
             return self._json(400, {"ok": False, "error": "缺少文本参数"})
-        # Google翻译TTS单次约200字符限制，超长截断（前端应按句调用）
-        if len(text) > 200:
-            text = text[:200]
+        # edge-tts 建议短文本（单句调用约30-100字符），超长截断
+        if len(text) > 500:
+            text = text[:500]
+
+        # ---- 优先：edge-tts 微软神经语音 ----
+        audio = self._tts_edge(text)
+        if audio:
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(audio)
+            return None
+
+        # ---- 回退：Google 翻译免费TTS（mp3）----
         try:
             encoded = urllib.parse.quote(text)
             url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=ru&client=tw-ob"
