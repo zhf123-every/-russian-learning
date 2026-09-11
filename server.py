@@ -1107,6 +1107,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_stream()
         if path == "/api/square/list":
             return self._handle_square_list()
+        if path == "/api/tts":
+            # TTS文本转语音（GET，支持直接用audio标签播放）
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            text = (params.get("text", [""])[0] or "").strip()
+            return self._handle_tts(text)
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
@@ -1196,6 +1202,36 @@ class Handler(BaseHTTPRequestHandler):
                 os.unlink(audio_path)
             except OSError:
                 pass
+
+    def _handle_tts(self, text):
+        """TTS文本转语音：调用Google翻译免费TTS，返回俄语音频（audio/mpeg）。
+        用于浏览器没有俄语语音包时的降级方案。
+        """
+        if not text:
+            return self._json(400, {"ok": False, "error": "缺少文本参数"})
+        # Google翻译TTS单次约200字符限制，超长截断（前端应按句调用）
+        if len(text) > 200:
+            text = text[:200]
+        try:
+            encoded = urllib.parse.quote(text)
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded}&tl=ru&client=tw-ob"
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            req.add_header("Referer", "https://translate.google.com/")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                audio = resp.read()
+                ctype = resp.headers.get("Content-Type", "audio/mpeg")
+            # 返回音频二进制
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(audio)
+            return None
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "TTS生成失败：" + str(e)})
 
     def _handle_transcribe_audio(self, data):
         """独立音频转写接口：接收 base64 音频，返回转写文本和分段。"""
