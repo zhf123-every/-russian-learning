@@ -882,14 +882,15 @@ def _groq_whisper_transcribe(wav_path):
 
 def _cf_whisper_transcribe(wav_path):
     """Cloudflare Workers AI Whisper 识别（免费，无需 Groq 账号）。
-    返回 (text, err)；成功时 err=None。"""
-    import base64
+    返回 (text, err)；成功时 err=None。
+    注意：audio 字段必须是「字节数字数组」(list[int])，不是 base64 字符串
+    （传字符串会报 400 Type mismatch / audio must not be empty）。"""
     with open(wav_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("ascii")
+        audio_bytes = f.read()
     req = urllib.request.Request(
         "https://api.cloudflare.com/client/v4/accounts/%s/ai/run/@cf/openai/whisper"
         % CLOUDFLARE_ACCOUNT_ID,
-        data=json.dumps({"audio": b64}).encode("utf-8"),
+        data=json.dumps({"audio": list(audio_bytes)}).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
             "Content-Type": "application/json",
