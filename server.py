@@ -41,8 +41,13 @@ DIST_DIR = os.path.join(BASE_DIR, "dist")
 AI_BASE_URL = os.environ.get("AI_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com"
 AI_API_KEY = os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 AI_MODEL = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OPENAI_MODEL") or "deepseek-chat"
-# 智谱 AI Key：用于高精度语音识别（GLM-ASR-2512），在 https://bigmodel.cn 申请
+# 智谱 AI Key：用于高精度语音识别（GLM-ASR-2512）与俄语规范化修正，在 https://bigmodel.cn 申请
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY") or ""
+# Groq Key：Whisper-large-v3 语音识别（快、准，俄语最优），在 https://console.groq.com 免费申请
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or ""
+# Cloudflare Workers AI：免费 Whisper 识别（需 Account ID + API Token，在 dash.cloudflare.com 创建）
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or ""
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN") or ""
 
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
@@ -828,6 +833,108 @@ def _glm_asr_transcribe(wav_path):
     return None, "智谱返回格式异常：" + raw[:200]
 
 
+def _groq_whisper_transcribe(wav_path):
+    """Groq Whisper-large-v3 转写：速度快、俄语识别准、容忍不标准发音。
+    返回 (text, err)；成功时 err=None。"""
+    import uuid
+    boundary = "----WebKitFormBoundary" + uuid.uuid4().hex
+    with open(wav_path, "rb") as f:
+        file_data = f.read()
+
+    def _field(name, value):
+        return ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                % (boundary, name, value)).encode("utf-8")
+
+    body = b""
+    body += _field("model", "whisper-large-v3")
+    body += _field("language", "ru")
+    body += _field("response_format", "json")
+    body += ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+             "Content-Type: audio/wav\r\n\r\n" % boundary).encode("utf-8")
+    body += file_data
+    body += ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/audio/transcriptions",
+        data=body,
+        headers={
+            "Authorization": "Bearer " + GROQ_API_KEY,
+            "Content-Type": "multipart/form-data; boundary=" + boundary,
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        return None, "Groq接口请求失败：" + str(e)
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return None, "Groq返回非JSON：" + raw[:200]
+    if isinstance(j, dict):
+        if j.get("text"):
+            return j["text"].strip(), None
+        if j.get("error"):
+            return None, "Groq错误：" + str(j.get("error"))
+    return None, "Groq返回格式异常：" + raw[:200]
+
+
+def _cf_whisper_transcribe(wav_path):
+    """Cloudflare Workers AI Whisper 识别（免费，无需 Groq 账号）。
+    返回 (text, err)；成功时 err=None。"""
+    import base64
+    with open(wav_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    req = urllib.request.Request(
+        "https://api.cloudflare.com/client/v4/accounts/%s/ai/run/@cf/openai/whisper"
+        % CLOUDFLARE_ACCOUNT_ID,
+        data=json.dumps({"audio": b64}).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        return None, "Cloudflare接口请求失败：" + str(e)
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return None, "Cloudflare返回非JSON：" + raw[:200]
+    # 成功：{"result": {"text": "..."}}；失败：{"success": false, "errors": [...]}
+    if isinstance(j, dict):
+        r = j.get("result")
+        if isinstance(r, dict) and r.get("text"):
+            return r["text"].strip(), None
+        errs = j.get("errors")
+        if errs:
+            return None, "Cloudflare错误：" + str(errs[0] if isinstance(errs, list) else errs)[:200]
+    return None, "Cloudflare返回格式异常：" + raw[:200]
+
+
+def _normalize_russian_text(text):
+    """用智谱把不标准/有拼写错误的俄语修正为规范写法（拼写、大小写、标点）。
+    不改变原意、不增删内容；识别本就正确时原样返回。"""
+    if not ZHIPU_API_KEY or not (text or "").strip():
+        return text
+    try:
+        messages = [
+            {"role": "system", "content": "你是俄语老师。学生会话的语音识别文本可能有拼写、大小写、标点错误。请把它修正为规范俄语：纠正拼写、大小写、标点，不改变原意、不增删内容。如果已经正确，原样输出。只输出修正后的俄语句子，不要任何解释、翻译或引号。"},
+            {"role": "user", "content": text},
+        ]
+        content = ai_chat("https://open.bigmodel.cn/api/paas/v4", ZHIPU_API_KEY, "glm-4-flash", messages)
+        out = (content or "").strip().strip('"“”').strip()
+        return out if out else text
+    except Exception as e:
+        print("[asr] 俄语规范化失败，返回原文：", repr(e))
+        return text
+
+
 def transcribe_file(path, model_name="small"):
     """把 16kHz 单声道 WAV 转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
     segments 每项 {start, end, text}（秒）。model_name 仅为兼容旧调用保留，Vosk 模型固定俄语。"""
@@ -1501,8 +1608,9 @@ class Handler(BaseHTTPRequestHandler):
         """把音频字节保存为临时文件 → 转 WAV → 转写。
 
         转写引擎优先级：
-          1. 智谱 GLM-ASR-2512（高精度多语言，配置 ZHIPU_API_KEY 后启用，音频≤30秒）
-          2. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
+          1. Groq Whisper-large-v3（快、准，俄语最优，配置 GROQ_API_KEY 后启用）
+          2. 智谱 GLM-ASR-2512（高精度多语言，配置 ZHIPU_API_KEY 后启用，音频≤30秒）
+          3. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
         返回 (user_text, segments, error)；成功时 error 为 None。
         所有临时文件在内部清理。"""
         fd, audio_path = tempfile.mkstemp(prefix="recite_", suffix=".webm")
@@ -1525,17 +1633,36 @@ class Handler(BaseHTTPRequestHandler):
             return None, None, "音频转码失败（缺少转码组件）"
 
         try:
-            # ---- 优先：智谱高精度识别（识别初学者俄语更准）----
+            # ---- 优先1：Groq Whisper（快+准）----
+            if GROQ_API_KEY:
+                try:
+                    text, err = _groq_whisper_transcribe(wav_path)
+                    if err is None and text:
+                        return text, [], None
+                    print("[asr] Groq 转写失败，切换下一引擎：", err)
+                except Exception as e:
+                    print("[asr] Groq 转写异常：", repr(e))
+
+            # ---- 优先2：Cloudflare Workers AI Whisper（免费，无需注册新服务）----
+            if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+                try:
+                    text, err = _cf_whisper_transcribe(wav_path)
+                    if err is None and text:
+                        return text, [], None
+                    print("[asr] Cloudflare 转写失败，切换下一引擎：", err)
+                except Exception as e:
+                    print("[asr] Cloudflare 转写异常：", repr(e))
+
+            # ---- 优先2：智谱高精度识别 ----
             if ZHIPU_API_KEY:
                 try:
                     src = wav_path
+                    clipped = None
                     dur = _wav_duration(wav_path)
                     if dur and dur > 30:
                         clipped = _clip_wav_30s(wav_path)
                         if clipped:
                             src = clipped
-                    else:
-                        clipped = None
                     text, err = _glm_asr_transcribe(src)
                     if clipped:
                         try:
@@ -1544,9 +1671,9 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     if err is None and text:
                         return text, [], None
-                    print("[asr] 智谱转写失败，回退 Vosk：", err)
+                    print("[asr] 智谱转写失败，切换下一引擎：", err)
                 except Exception as e:
-                    print("[asr] 智谱转写异常，回退 Vosk：", repr(e))
+                    print("[asr] 智谱转写异常：", repr(e))
 
             # ---- 兜底：Vosk 本地俄语 ----
             segs, err = transcribe_file(wav_path)
@@ -1646,14 +1773,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": "TTS生成失败：" + str(e)})
 
     def _handle_transcribe_audio(self, data):
-        """独立音频转写接口：接收 base64 音频，返回转写文本和分段。"""
+        """独立音频转写接口：接收 base64 音频，返回转写文本和分段。
+        text 为规范化后的规范俄语句子（识别不标准也会被修正），raw 为原始识别文本。"""
         audio_bytes, err = self._decode_audio_data_url(data.get("audio"))
         if err:
             return self._json(200, {"ok": False, "error": err})
         user_text, segs, err = self._transcribe_audio_bytes(audio_bytes)
         if err:
             return self._json(200, {"ok": False, "error": err})
-        return self._json(200, {"ok": True, "text": user_text, "segments": segs})
+        corrected = _normalize_russian_text(user_text) if user_text else user_text
+        return self._json(200, {"ok": True, "text": corrected or user_text, "raw": user_text, "segments": segs})
 
     def _handle_tutor(self, data):
         """俄语AI对话教练：按等级(A1/A2/B1/B2)自由对话 + 语法纠错引导。
