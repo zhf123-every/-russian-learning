@@ -41,6 +41,8 @@ DIST_DIR = os.path.join(BASE_DIR, "dist")
 AI_BASE_URL = os.environ.get("AI_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com"
 AI_API_KEY = os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 AI_MODEL = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OPENAI_MODEL") or "deepseek-chat"
+# 智谱 AI Key：用于高精度语音识别（GLM-ASR-2512），在 https://bigmodel.cn 申请
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY") or ""
 
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
@@ -741,6 +743,91 @@ def _words_to_segments(words, gap=0.6):
     return segs
 
 
+def _wav_duration(path):
+    """读取 WAV 时长（秒）。"""
+    import wave
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:
+        return None
+
+
+def _clip_wav_30s(src):
+    """截取 WAV 前 30 秒（GLM-ASR-2512 限制音频≤30秒）。返回新 wav 路径或 None。"""
+    ff = get_ffmpeg()
+    if not ff:
+        return None
+    fd, dst = tempfile.mkstemp(prefix="asr_clip_", suffix=".wav")
+    os.close(fd)
+    cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-t", "30",
+           "-i", src, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", dst]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        return None
+    if proc.returncode != 0 or not os.path.isfile(dst):
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        return None
+    return dst
+
+
+def _glm_asr_transcribe(wav_path):
+    """智谱 GLM-ASR-2512 高精度多语言识别（multipart/form-data）。
+    返回 (text, err)；成功时 err=None。"""
+    import uuid
+    boundary = "----WebKitFormBoundary" + uuid.uuid4().hex
+    with open(wav_path, "rb") as f:
+        file_data = f.read()
+
+    def _field(name, value):
+        return ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                % (boundary, name, value)).encode("utf-8")
+
+    body = b""
+    body += _field("model", "glm-asr-2512")
+    body += _field("stream", "false")
+    body += ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+             "Content-Type: audio/wav\r\n\r\n" % boundary).encode("utf-8")
+    body += file_data
+    body += ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    req = urllib.request.Request(
+        "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+        data=body,
+        headers={
+            "Authorization": "Bearer " + ZHIPU_API_KEY,
+            "Content-Type": "multipart/form-data; boundary=" + boundary,
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        return None, "智谱接口请求失败：" + str(e)
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return None, "智谱返回非 JSON：" + raw[:200]
+    if isinstance(j, dict):
+        if j.get("text"):
+            return j["text"].strip(), None
+        tr = j.get("transcripts")
+        if isinstance(tr, list) and tr and tr[0].get("text"):
+            return tr[0]["text"].strip(), None
+        if j.get("error"):
+            return None, "智谱错误：" + str(j.get("error"))
+    return None, "智谱返回格式异常：" + raw[:200]
+
+
 def transcribe_file(path, model_name="small"):
     """把 16kHz 单声道 WAV 转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
     segments 每项 {start, end, text}（秒）。model_name 仅为兼容旧调用保留，Vosk 模型固定俄语。"""
@@ -1411,7 +1498,11 @@ class Handler(BaseHTTPRequestHandler):
             return None, "音频解码失败：" + str(e)
 
     def _transcribe_audio_bytes(self, audio_bytes):
-        """把音频字节保存为临时文件 → ffmpeg 转 WAV → Vosk 转写。
+        """把音频字节保存为临时文件 → 转 WAV → 转写。
+
+        转写引擎优先级：
+          1. 智谱 GLM-ASR-2512（高精度多语言，配置 ZHIPU_API_KEY 后启用，音频≤30秒）
+          2. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
         返回 (user_text, segments, error)；成功时 error 为 None。
         所有临时文件在内部清理。"""
         fd, audio_path = tempfile.mkstemp(prefix="recite_", suffix=".webm")
@@ -1431,9 +1522,33 @@ class Handler(BaseHTTPRequestHandler):
                 os.unlink(audio_path)
             except OSError:
                 pass
-            return None, None, "未安装 ffmpeg（音频转写需 ffmpeg）"
+            return None, None, "音频转码失败（缺少转码组件）"
 
         try:
+            # ---- 优先：智谱高精度识别（识别初学者俄语更准）----
+            if ZHIPU_API_KEY:
+                try:
+                    src = wav_path
+                    dur = _wav_duration(wav_path)
+                    if dur and dur > 30:
+                        clipped = _clip_wav_30s(wav_path)
+                        if clipped:
+                            src = clipped
+                    else:
+                        clipped = None
+                    text, err = _glm_asr_transcribe(src)
+                    if clipped:
+                        try:
+                            os.unlink(clipped)
+                        except OSError:
+                            pass
+                    if err is None and text:
+                        return text, [], None
+                    print("[asr] 智谱转写失败，回退 Vosk：", err)
+                except Exception as e:
+                    print("[asr] 智谱转写异常，回退 Vosk：", repr(e))
+
+            # ---- 兜底：Vosk 本地俄语 ----
             segs, err = transcribe_file(wav_path)
             if err:
                 return None, None, err
