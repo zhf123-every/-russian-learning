@@ -655,8 +655,39 @@ def get_ffmpeg():
 
 
 def _to_wav16k(src_path):
-    """用 ffmpeg 把任意音频转成 16kHz 单声道 PCM WAV，供 Vosk 转写。
-    返回临时 wav 路径；ffmpeg 缺失或转码失败返回 None。"""
+    """把任意音频转成 16kHz 单声道 PCM WAV，供 Vosk 转写。
+
+    优先用 PyAV（pip 自带 FFmpeg 库，无需系统 ffmpeg，磁盘/内存占用小），
+    PyAV 不可用时回退到系统 ffmpeg / 自动下载的静态 ffmpeg。
+    返回临时 wav 路径；全部失败返回 None。
+    """
+    dst = None
+    # ---- 路径1：PyAV（推荐，无需外部 ffmpeg，512MB 实例友好）----
+    try:
+        import av
+        out_fd, dst = tempfile.mkstemp(prefix="vosk_", suffix=".wav")
+        os.close(out_fd)
+        container = av.open(src_path)
+        stream = next(s for s in container.streams if s.type == "audio")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        with av.open(dst, "w", format="wav") as out:
+            out_stream = out.add_stream("pcm_s16le", rate=16000)
+            for frame in container.decode(stream):
+                for f in resampler.resample(frame):
+                    for packet in out_stream.encode(f):
+                        out.mux(packet)
+            for packet in out_stream.encode(None):
+                out.mux(packet)
+        container.close()
+        return dst
+    except Exception as e:
+        print("[wav16k] PyAV 转码不可用，回退 ffmpeg：", repr(e))
+        if dst:
+            try:
+                os.unlink(dst)
+            except OSError:
+                pass
+    # ---- 路径2：ffmpeg（系统安装或自动下载的静态版）----
     ffmpeg = get_ffmpeg()
     if not ffmpeg:
         return None

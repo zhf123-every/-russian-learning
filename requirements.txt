@@ -3,3 +3,4 @@ razdel
 psycopg2-binary
 vosk
 edge-tts
+av
