@@ -520,6 +520,51 @@ _vosk_model = None
 _vosk_model_path = None
 _vosk_import_ok = None       # None=未尝试, True=导入成功, False=导入失败
 _vosk_import_err = None
+_vosk_dl_lock = None         # 模型自动下载互斥锁（多线程只下载一次）
+
+
+def _download_vosk_model(model_path):
+    """自动下载并解压 vosk-model-small-ru-0.22（约45MB，俄语小模型）。
+
+    服务器（如 Render 免费实例）磁盘易失，模型不会随部署保留，
+    因此在模型目录缺失时自动从官网拉取，部署后无需手动上传。
+    返回 True=模型目录就绪；False=下载/解压失败。
+    """
+    global _vosk_dl_lock
+    import threading
+    if _vosk_dl_lock is None:
+        _vosk_dl_lock = threading.Lock()
+    if not _vosk_dl_lock.acquire(blocking=False):
+        # 已有线程正在下载，本次调用直接返回失败，由调用方给出提示
+        return False
+    try:
+        import os, zipfile, urllib.request, shutil
+        if os.path.isdir(model_path):
+            return True
+        parent = os.path.dirname(model_path)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError:
+            pass
+        url = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
+        tmp_zip = os.path.join(parent, "vosk-model-small-ru-0.22.zip")
+        print("[vosk] 自动下载俄语识别模型：", url)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=600) as resp, open(tmp_zip, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        print("[vosk] 模型下载完成，正在解压…")
+        with zipfile.ZipFile(tmp_zip) as z:
+            z.extractall(parent)
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            pass
+        return os.path.isdir(model_path)
+    except Exception as e:
+        print("[vosk] 模型自动下载失败：", repr(e))
+        return False
+    finally:
+        _vosk_dl_lock.release()
 
 
 def get_vosk_model():
@@ -540,8 +585,9 @@ def get_vosk_model():
     if not model_path:
         model_path = os.path.join(BASE_DIR, "vosk-model-small-ru-0.22")
     if not os.path.isdir(model_path):
-        print("[vosk] 模型目录不存在：", model_path)
-        return None
+        print("[vosk] 模型目录不存在，尝试自动下载：", model_path)
+        if not _download_vosk_model(model_path):
+            return None
     if _vosk_model is None or _vosk_model_path != model_path:
         import vosk
         vosk.SetLogLevel(-1)          # 静音 Kaldi 的 [INFO] 日志
@@ -550,10 +596,68 @@ def get_vosk_model():
     return _vosk_model
 
 
+_ffmpeg_path = None
+_ffmpeg_checked = False
+
+
+def get_ffmpeg():
+    """返回可用的 ffmpeg 路径。
+
+    优先用系统安装的 ffmpeg；找不到时自动下载静态版（johnvansickle，
+    linux amd64，约100MB）到本地目录并缓存，供 Render 免费实例等
+    未预装 ffmpeg 的环境使用。返回 None 表示不可用。
+    """
+    global _ffmpeg_path, _ffmpeg_checked
+    if _ffmpeg_checked:
+        return _ffmpeg_path
+    _ffmpeg_checked = True
+    ff = shutil.which("ffmpeg")
+    if ff:
+        _ffmpeg_path = ff
+        return ff
+    local = os.path.join(BASE_DIR, "ffmpeg-static", "ffmpeg")
+    if os.path.isfile(local):
+        _ffmpeg_path = local
+        return local
+    try:
+        import tarfile, urllib.request
+        url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+        dest_dir = os.path.join(BASE_DIR, "ffmpeg-static")
+        os.makedirs(dest_dir, exist_ok=True)
+        tmp = os.path.join(dest_dir, "ffmpeg.tar.xz")
+        print("[ffmpeg] 未找到系统 ffmpeg，自动下载静态版…")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=600) as resp, open(tmp, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        with tarfile.open(tmp, "r:xz") as t:
+            member = None
+            for m in t.getmembers():
+                if m.name.endswith("/ffmpeg") and m.isfile():
+                    member = m
+                    break
+            if member is None:
+                raise RuntimeError("静态包内未找到 ffmpeg")
+            src_f = t.extractfile(member)
+            with open(local, "wb") as out:
+                if src_f:
+                    shutil.copyfileobj(src_f, out)
+        os.chmod(local, 0o755)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        _ffmpeg_path = local
+        print("[ffmpeg] 静态 ffmpeg 就绪：", local)
+        return local
+    except Exception as e:
+        print("[ffmpeg] 自动下载失败：", repr(e))
+        return None
+
+
 def _to_wav16k(src_path):
     """用 ffmpeg 把任意音频转成 16kHz 单声道 PCM WAV，供 Vosk 转写。
     返回临时 wav 路径；ffmpeg 缺失或转码失败返回 None。"""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = get_ffmpeg()
     if not ffmpeg:
         return None
     fd, dst = tempfile.mkstemp(prefix="vosk_", suffix=".wav")
@@ -1019,11 +1123,11 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "direct":
             self._proxy_stream(payload, headers)
             return
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = get_ffmpeg()
         if not ffmpeg:
             self.send_response(502); self._cors(); self.end_headers()
             try:
-                self.wfile.write("流式代理失败：未安装 ffmpeg（服务器需安装 ffmpeg）".encode("utf-8"))
+                self.wfile.write("流式代理失败：未安装 ffmpeg（服务器需安装 ffmpeg，且自动下载失败）".encode("utf-8"))
             except Exception:
                 pass
             return
