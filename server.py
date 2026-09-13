@@ -936,6 +936,69 @@ def _normalize_russian_text(text):
         return text
 
 
+def _ru_words(text):
+    """提取俄语单词序列：小写、ё→е、去标点与组合重音符号(U+0300-U+036F)。
+    切词时先把组合重音保留在词内（避免 Здра́вствуйте 被拆成两段），再统一剥离。"""
+    t = (text or "").lower().replace("ё", "е")
+    raw = re.findall(r"[а-я\u0300-\u036f\-]+", t)
+    out = []
+    for w in raw:
+        w2 = re.sub(r"[̀-ͯ]", "", w)
+        if w2:
+            out.append(w2)
+    return out
+
+
+def _align_pronunciation(standard, heard):
+    """逐词对齐标准原文与用户朗读文本（difflib），严格标注每个词的状态。
+    返回 (words, ratio)：
+      words: [{target, heard, status}]，status ∈ correct/misread/omitted/extra
+      ratio: 读对的目标词数 / 目标词总数（0~1），漏读直接拉低分数。
+    """
+    import difflib
+    targets = _ru_words(standard)
+    users = _ru_words(heard)
+    words = []
+    correct_cnt = 0
+    matcher = difflib.SequenceMatcher(a=targets, b=users, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i1, i2):
+                words.append({"target": targets[k], "heard": targets[k], "status": "correct"})
+                correct_cnt += 1
+        elif tag == "replace":
+            t_seg = targets[i1:i2]
+            u_seg = users[j1:j2]
+            for k, tw in enumerate(t_seg):
+                hw = u_seg[k] if k < len(u_seg) else ""
+                words.append({"target": tw, "heard": hw, "status": "misread"})
+            # 用户多读出来的词
+            for k in range(len(t_seg), len(u_seg)):
+                words.append({"target": "", "heard": u_seg[k], "status": "extra"})
+        elif tag == "delete":
+            for k in range(i1, i2):
+                words.append({"target": targets[k], "heard": "", "status": "omitted"})
+        elif tag == "insert":
+            for k in range(j1, j2):
+                words.append({"target": "", "heard": users[k], "status": "extra"})
+    total = len(targets)
+    ratio = (correct_cnt / total) if total else 0.0
+    return words, ratio
+
+
+def _pronunciation_band(ratio):
+    """词正确率 → 五档分数（80/85/90/95/100）。严格：必须全部读对才给 100。"""
+    if ratio >= 0.999:
+        return 100
+    if ratio >= 0.9:
+        return 95
+    if ratio >= 0.8:
+        return 90
+    if ratio >= 0.7:
+        return 85
+    return 80
+
+
 def transcribe_file(path, model_name="small"):
     """把 16kHz 单声道 WAV 转写成俄语句子列表。返回 (segments, error)，error 为 None 表示成功。
     segments 每项 {start, end, text}（秒）。model_name 仅为兼容旧调用保留，Vosk 模型固定俄语。"""
@@ -1551,11 +1614,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/square/list":
             return self._handle_square_list()
         if path == "/api/tts":
-            # TTS文本转语音（GET，支持直接用audio标签播放）
+            # TTS文本转语音（GET，支持直接用audio标签播放；voice=female/male 切换男女声）
             query = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(query)
             text = (params.get("text", [""])[0] or "").strip()
-            return self._handle_tts(text)
+            voice = (params.get("voice", [""])[0] or "").strip()
+            return self._handle_tts(text, voice)
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
@@ -1695,11 +1759,27 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     # ---- edge-tts（微软Edge神经语音，免费、无需API Key、无需torch）----
-    # 俄语女声 ru-RU-SvetlanaNeural：微软官方俄语标杆声音，自然流畅
+    # 允许的俄语 edge-tts 声音（女声 Svetlana / 男声 Dmitry）
     TTS_VOICE = "ru-RU-SvetlanaNeural"
+    TTS_VOICES = {
+        "female": "ru-RU-SvetlanaNeural",
+        "svetlana": "ru-RU-SvetlanaNeural",
+        "male": "ru-RU-DmitryNeural",
+        "dmitry": "ru-RU-DmitryNeural",
+        "ru-ru-svetlananeural": "ru-RU-SvetlanaNeural",
+        "ru-ru-dmitryneural": "ru-RU-DmitryNeural",
+    }
 
-    def _tts_edge(self, text):
-        """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。"""
+    def _pick_tts_voice(self, voice):
+        """根据前端传入的 voice 参数选择声音，非法值回退默认女声。"""
+        if not voice:
+            return self.TTS_VOICE
+        return self.TTS_VOICES.get(str(voice).strip().lower(), self.TTS_VOICE)
+
+    def _tts_edge(self, text, voice=None):
+        """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。
+        voice 可为 female/male（或具体声音名），缺省为俄语女声 Svetlana。"""
+        use_voice = self._pick_tts_voice(voice)
         try:
             import asyncio
             import edge_tts
@@ -1707,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
             # 最多重试3次，应对网络抖动
             for attempt in range(3):
                 try:
-                    communicate = edge_tts.Communicate(text, self.TTS_VOICE)
+                    communicate = edge_tts.Communicate(text, use_voice)
                     chunks = []
 
                     async def _collect():
@@ -1729,9 +1809,9 @@ class Handler(BaseHTTPRequestHandler):
             print("[TTS] edge-tts 异常：", e)
             return None
 
-    def _handle_tts(self, text):
+    def _handle_tts(self, text, voice=None):
         """TTS文本转语音：优先使用 edge-tts 微软神经语音（mp3），失败时回退 Google TTS（mp3）。
-        用于浏览器没有俄语语音包时的降级方案。
+        用于浏览器没有俄语语音包时的降级方案。voice 支持 female/male 切换男女声。
         """
         if not text:
             return self._json(400, {"ok": False, "error": "缺少文本参数"})
@@ -1740,7 +1820,7 @@ class Handler(BaseHTTPRequestHandler):
             text = text[:500]
 
         # ---- 优先：edge-tts 微软神经语音 ----
-        audio = self._tts_edge(text)
+        audio = self._tts_edge(text, voice)
         if audio:
             self.send_response(200)
             self._cors()
@@ -1918,6 +1998,159 @@ class Handler(BaseHTTPRequestHandler):
             "user_text": user_text,
             "errors": errors,
             "overall_tip": overall_tip,
+        }})
+
+    def _handle_sentence_analysis(self, data):
+        """句子精析：逐词（带重音/词性/词义）+ 句子成分 + 中译 + 详细语法解析，严格 JSON。"""
+        sentence = (data.get("sentence") or data.get("text") or "").strip()
+        if not sentence:
+            return self._json(400, {"ok": False, "error": "缺少句子"})
+
+        # 降级数据：仅做单词拆分
+        fallback_words = [
+            {"word": w, "stressed": w, "pos": "", "mean": ""}
+            for w in re.findall(r"[А-Яа-яЁё\-]+", sentence)
+        ]
+        if not AI_API_KEY:
+            return self._json(200, {"ok": True, "result": {
+                "words": fallback_words, "components": [], "translation": "",
+                "grammar": "未配置 AI API Key，仅返回单词拆分，无法生成词性、成分与语法解析。",
+            }})
+
+        prompt = """你是俄语教学专家。请对下面这句俄语做逐词与语法分析，严格只输出 JSON，不要输出 JSON 以外的任何文字、不要 markdown 代码块。
+句子：%s
+输出格式：
+{
+  "words": [
+    {"word": "句中出现的俄语原词", "stressed": "带重音的同形（在重音元音后面加组合重音符号 ́，例如 приве́т；单音节词也要标）", "pos": "词性中文，如 名词/动词/代词/形容词/副词/前置词/连接词/数词/语气词", "mean": "该词在本句中的中文词义"}
+  ],
+  "components": [
+    {"text": "句子中的一个成分片段（俄语原文，按主语/谓语/宾语/定语/状语等切分，各片段合起来覆盖整句）", "role": "该成分的中文语法角色"}
+  ],
+  "translation": "整句准确自然的中文翻译",
+  "grammar": "详细语法解析（中文，220字以内）：本句用了哪些语法点、为什么这么用、什么时候可以用该语法；用换行分点，简洁清楚"
+}
+要求：words 必须覆盖句子中的每一个单词（前置词、连词、语气词也要，不遗漏）；stressed 必须是俄语原词只加重音；components 按俄语句子的真实成分划分。""" % sentence
+
+        messages = [
+            {"role": "system", "content": "你是严谨的俄语语法老师，只输出 JSON。"},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            parsed = self._parse_ai_json(ai_response)
+            words = parsed.get("words", []) if isinstance(parsed, dict) else []
+            # 清洗 words，保证字段齐全
+            clean_words = []
+            for w in words:
+                if not isinstance(w, dict):
+                    continue
+                wv = (str(w.get("word", "")).strip())
+                if not wv:
+                    continue
+                clean_words.append({
+                    "word": wv,
+                    "stressed": str(w.get("stressed", "") or wv).strip(),
+                    "pos": str(w.get("pos", "") or "").strip(),
+                    "mean": str(w.get("mean", "") or "").strip(),
+                })
+            components = []
+            for c in (parsed.get("components", []) if isinstance(parsed, dict) else []):
+                if isinstance(c, dict) and str(c.get("text", "")).strip():
+                    components.append({
+                        "text": str(c.get("text", "")).strip(),
+                        "role": str(c.get("role", "") or "").strip(),
+                    })
+            if not clean_words:
+                clean_words = fallback_words
+            return self._json(200, {"ok": True, "result": {
+                "words": clean_words,
+                "components": components,
+                "translation": str(parsed.get("translation", "") or "").strip() if isinstance(parsed, dict) else "",
+                "grammar": str(parsed.get("grammar", "") or "").strip() if isinstance(parsed, dict) else "",
+            }})
+        except Exception as e:
+            # AI 失败：降级返回单词拆分，前端仍可使用
+            return self._json(200, {"ok": True, "result": {
+                "words": fallback_words, "components": [], "translation": "",
+                "grammar": "语法解析生成失败：" + str(e)[:120],
+            }})
+
+    def _handle_pronunciation_score(self, data):
+        """口语评测：录音转写 → 逐词严格对齐（错读/漏读/多读）→ AI 五档严格评分与建议。
+        分数只可能是 80/85/90/95/100；漏读、错读全部逐词标出。"""
+        standard = (data.get("standard") or "").strip()
+        if not standard:
+            return self._json(200, {"ok": False, "error": "缺少标准原文"})
+        audio_bytes, err = self._decode_audio_data_url(data.get("audio"))
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+
+        user_text, _segs, err = self._transcribe_audio_bytes(audio_bytes)
+        if err:
+            return self._json(200, {"ok": False, "error": err})
+        heard = _normalize_russian_text(user_text) if user_text else user_text
+
+        # 客观逐词对齐 + 客观五档分（防 AI 糊弄的权威兜底）
+        word_rows, ratio = _align_pronunciation(standard, heard)
+        band = _pronunciation_band(ratio)
+
+        stress_tip = rhythm_tip = summary = ""
+        ai_score = None
+        if AI_API_KEY and heard:
+            align_brief = "；".join(
+                ("%s[%s→%s]" % (r["target"], r["status"], r["heard"])) if r["status"] != "correct" else r["target"]
+                for r in word_rows
+            )
+            prompt = """你是严格的俄语口语评测老师。请根据【标准原文】【学生实际朗读】和【逐词对齐】打分并给建议。
+标准原文：%s
+学生朗读（语音识别）：%s
+逐词对齐（correct正确/misread读错/omitted漏读/extra多读）：%s
+词正确率：%.0f%%
+
+评分规则（必须严格，不能宽松、不能糊弄，学生没读到的词必须在 summary 中点名）：
+- score 只能取 100、95、90、85、80 之一；
+- 100：每个词都读对、完整无遗漏，重音语调自然；
+- 95：仅 1 处轻微词尾/发音小问题；90：约 20%% 词有问题或 1 处漏读；
+- 85：约 30%% 词有问题或多处漏读；80：问题超过 30%%、朗读不完整。
+- 你的 score 不得高于按词正确率应得的档位（当前客观上限 %d 分）。
+严格只输出 JSON（无 markdown）：
+{"score": 整数, "stress": "重音方面的中文点评与纠正（指出哪个词重音位置，读对则肯定）", "rhythm": "停顿、语调、流利度方面的中文点评", "summary": "总体中文评语：逐一点名读错/漏读/多读的词并给正确读法，最后给一句练习建议"}""" % (
+                standard, heard, align_brief, ratio * 100, band)
+            try:
+                resp = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, [
+                    {"role": "system", "content": "你是严格的俄语口语评测老师，只输出 JSON。"},
+                    {"role": "user", "content": prompt},
+                ])
+                parsed = self._parse_ai_json(resp)
+                if isinstance(parsed, dict):
+                    try:
+                        ai_score = int(round(float(parsed.get("score"))))
+                    except (TypeError, ValueError):
+                        ai_score = None
+                    stress_tip = str(parsed.get("stress", "") or "").strip()
+                    rhythm_tip = str(parsed.get("rhythm", "") or "").strip()
+                    summary = str(parsed.get("summary", "") or "").strip()
+            except Exception as e:
+                print("[score] AI 评分失败，使用客观分：", repr(e))
+
+        # 分数仲裁：必须是五档之一，且不得高于客观上限（严格，不允许 AI 放水）
+        valid_bands = (80, 85, 90, 95, 100)
+        score = band
+        if ai_score in valid_bands:
+            score = min(ai_score, band)
+        if not heard:
+            summary = "没有识别到俄语语音，请靠近麦克风、大声清晰地再读一次。"
+
+        return self._json(200, {"ok": True, "result": {
+            "user_text": heard or user_text or "",
+            "raw_text": user_text or "",
+            "score": score,
+            "ratio": round(ratio, 3),
+            "words": word_rows,
+            "stress": stress_tip,
+            "rhythm": rhythm_tip,
+            "summary": summary,
         }})
 
     def _parse_ai_json(self, text):
@@ -2359,6 +2592,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_recite_compare(data)
             if path == "/api/transcribe-audio":
                 return self._handle_transcribe_audio(data)
+            if path == "/api/sentence-analysis":
+                return self._handle_sentence_analysis(data)
+            if path == "/api/pronunciation-score":
+                return self._handle_pronunciation_score(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             if path == "/api/generate-quiz":
