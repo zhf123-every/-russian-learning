@@ -1063,7 +1063,7 @@ def ai_chat(base_url, key, model, messages):
     key_preview = (key[:4] + "***") if key else "(空)"
     print("[AI] 请求 URL:", url)
     print("[AI] model:", model, "| messages:", len(messages), "条 | key:", key_preview)
-    payload = {"model": model, "messages": messages, "temperature": 0.4, "stream": False}
+    payload = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
     headers = {"Authorization": "Bearer " + key}
     status, body = http_call("POST", url, payload, headers, timeout=60)
     print("[AI] 响应 status:", status, "| body前500字:", body[:500])
@@ -2039,9 +2039,15 @@ class Handler(BaseHTTPRequestHandler):
         ]
         try:
             parsed = None
-            for _attempt in range(2):
+            for _attempt in range(3):
                 try:
-                    ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+                    msgs = messages if _attempt == 0 else messages + [
+                        {"role": "system", "content":
+                         "你上次的输出不是合法 JSON。请重新生成："
+                         "只输出一个合法的 JSON 对象，不要任何多余文字、"
+                         "解释、markdown 或代码块。"}
+                    ]
+                    ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, msgs)
                     parsed = self._parse_ai_json(ai_response)
                     if parsed:
                         break
