@@ -2030,6 +2030,7 @@ class Handler(BaseHTTPRequestHandler):
   "translation": "整句准确自然的中文翻译",
   "grammar": "详细语法解析（中文，220字以内）：本句用了哪些语法点、为什么这么用、什么时候可以用该语法；用换行分点，简洁清楚"
 }
+重要：以空格为界进行标准分词，一个空格分隔的单位就是一个单词，严禁按音节拆分单词！例如"Доброе утро"必须拆为两个词：Доброе、утро，绝不能拆成 До/брое/у/тро。"Мама, я умею"必须拆为 Мама、я、умею 三个词。重音符号属于所在单词，不是分割符。
 要求：words 必须覆盖句子中的每一个单词（前置词、连词、语气词也要，不遗漏）；stressed 必须是俄语原词只加重音；components 按俄语句子的真实成分划分。""" % sentence
 
         messages = [
@@ -2037,8 +2038,17 @@ class Handler(BaseHTTPRequestHandler):
             {"role": "user", "content": prompt},
         ]
         try:
-            ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
-            parsed = self._parse_ai_json(ai_response)
+            parsed = None
+            for _attempt in range(2):
+                try:
+                    ai_response = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+                    parsed = self._parse_ai_json(ai_response)
+                    if parsed:
+                        break
+                except Exception:
+                    parsed = None
+            if not parsed:
+                raise RuntimeError(" AI 返回内容无法解析为 JSON")
             words = parsed.get("words", []) if isinstance(parsed, dict) else []
             # 清洗 words，保证字段齐全
             clean_words = []
@@ -2170,7 +2180,29 @@ class Handler(BaseHTTPRequestHandler):
         text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
         # 5. 去除 trailing commas（} 或 ] 前面的逗号）
         text = re.sub(r',\s*([}\]])', r'\1', text)
-        # 6. 修复未转义的换行符在字符串内的问题（简单处理）
+        # 6. 状态机修复：字符串内的裸换行/回车转义为 \n，避免破坏 JSON
+        out = []
+        in_str = False
+        esc = False
+        for ch in text:
+            if in_str:
+                if esc:
+                    out.append(ch); esc = False
+                elif ch == '\\':
+                    out.append(ch); esc = True
+                elif ch == '"':
+                    in_str = False; out.append(ch)
+                elif ch == '\n':
+                    out.append('\\n')
+                elif ch == '\r':
+                    pass
+                else:
+                    out.append(ch)
+            else:
+                if ch == '"':
+                    in_str = True
+                out.append(ch)
+        text = ''.join(out)
         # 7. 尝试标准解析
         try:
             return json.loads(text)
