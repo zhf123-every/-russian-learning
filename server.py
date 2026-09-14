@@ -2615,6 +2615,12 @@ class Handler(BaseHTTPRequestHandler):
                 key = (data.get("key") or AI_API_KEY).strip()
                 model = (data.get("model") or AI_MODEL).strip()
                 messages = data.get("messages") or []
+                if not messages:
+                    return self._json(200, {"ok": False, "error": "缺少 messages 参数"})
+                # 兼容修复：智谱/DeepSeek 等接口要求 messages 至少包含一条 user 消息，
+                # 只有 system 消息（如 AI 引导语）会返回 1214 messages 参数非法。
+                if all((m.get("role") == "system" for m in messages)):
+                    messages = list(messages) + [{"role": "user", "content": "请开始。"}]
                 if not key:
                     return self._json(200, {"ok": False, "error": "未配置 AI API Key（请在环境变量 AI_API_KEY 中设置）"})
                 try:
