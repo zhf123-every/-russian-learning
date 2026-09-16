@@ -1534,6 +1534,66 @@ def _quest_get_course_with_statements(course_id):
         conn.close()
 
 
+def _quest_get_course_with_sequences(course_id):
+    """按 sequence_id 分组返回课程题目（逐级累加模式）"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_courses WHERE id = %s", (course_id,))
+            course = cur.fetchone()
+            if not course:
+                return None
+            cur.execute("SELECT * FROM quest_statements WHERE course_id = %s ORDER BY sequence_id, sequence_order, `order`", (course_id,))
+            statements = cur.fetchall()
+            stmt_ids = [s["id"] for s in statements]
+            words_map = {}
+            aa_map = {}
+            if stmt_ids:
+                ph = ", ".join(["%s"] * len(stmt_ids))
+                cur.execute(f"SELECT * FROM quest_words WHERE statement_id IN ({ph}) ORDER BY statement_id, `order`", stmt_ids)
+                for w in cur.fetchall():
+                    words_map.setdefault(w["statement_id"], []).append(w)
+                cur.execute(f"SELECT * FROM quest_acceptable_answers WHERE statement_id IN ({ph}) ORDER BY statement_id, is_default DESC", stmt_ids)
+                for a in cur.fetchall():
+                    aa_map.setdefault(a["statement_id"], []).append(a)
+            sequences_dict = {}
+            seq_order_map = {}
+            for stmt in statements:
+                seq_id = stmt.get("sequence_id") or stmt["id"]
+                if seq_id not in sequences_dict:
+                    sequences_dict[seq_id] = []
+                    seq_order_map[seq_id] = stmt["order"]
+                sequences_dict[seq_id].append(stmt)
+            sequences = []
+            for seq_id in sorted(sequences_dict.keys(), key=lambda x: seq_order_map.get(x, 0)):
+                stmts = sequences_dict[seq_id]
+                full_stmt = max(stmts, key=lambda s: s.get("sequence_order") or 1)
+                units = []
+                for stmt in sorted(stmts, key=lambda s: s.get("sequence_order") or 1):
+                    words = words_map.get(stmt["id"], [])
+                    answers = aa_map.get(stmt["id"], [])
+                    units.append({
+                        "id": stmt["id"], "sequenceOrder": stmt.get("sequence_order") or 1,
+                        "chinese": stmt["chinese"], "russian": stmt["russian"],
+                        "stressMarked": stmt["stress_marked"] or "", "grammaticalNote": stmt["grammatical_note"] or "",
+                        "wordOrderFlexible": bool(stmt["word_order_flexible"]),
+                        "words": [{"order": w["order"], "lemma": w["lemma"], "form": w["form"], "pos": w["pos"],
+                            "grammaticalCase": w["grammatical_case"], "number": w["number"], "gender": w["gender"],
+                            "person": w["person"], "tense": w["tense"], "aspect": w["aspect"],
+                            "stressPosition": w["stress_position"], "syntacticRole": w["syntactic_role"],
+                            "isFixedPosition": bool(w["is_fixed_position"]), "chunkType": w["chunk_type"]} for w in words],
+                        "acceptableAnswers": [{"wordOrder": json.loads(a["word_order"]) if isinstance(a["word_order"], str) else a["word_order"],
+                            "wordVariants": json.loads(a["word_variants"]) if isinstance(a["word_variants"], str) else a["word_variants"],
+                            "isDefault": bool(a["is_default"]), "note": a["note"] or ""} for a in answers],
+                    })
+                sequences.append({"sequenceId": seq_id, "fullRussian": full_stmt["russian"],
+                    "fullChinese": full_stmt["chinese"], "totalUnits": len(units), "units": units})
+            return {"id": course["id"], "title": course["title"], "description": course["description"] or "",
+                "order": course["order"], "totalSequences": len(sequences), "sequences": sequences}
+    finally:
+        conn.close()
+
+
 # 连词成句判题引擎
 from answer_engine import AnswerEngine
 
@@ -2030,7 +2090,13 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 4:
                 course_id = parts[2]
                 try:
-                    data = _quest_get_course_with_statements(course_id)
+                    query = urllib.parse.urlparse(self.path).query
+                    params = urllib.parse.parse_qs(query)
+                    group_by = (params.get("group_by", [""])[0] or "").strip()
+                    if group_by == "sequence":
+                        data = _quest_get_course_with_sequences(course_id)
+                    else:
+                        data = _quest_get_course_with_statements(course_id)
                     if data is None:
                         return self._json(404, {"ok": False, "error": "课程不存在: " + course_id})
                     return self._json(200, {"ok": True, "data": data})
