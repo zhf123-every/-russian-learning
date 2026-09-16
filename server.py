@@ -33,6 +33,24 @@ from datetime import datetime
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 读取本地 .env 文件（本地开发时配置 DATABASE_URL 等）
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.isfile(_env_path):
+    with open(_env_path, "r", encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                _k = _k.strip()
+                _v = _v.strip().strip('"').strip("'")
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v
+
+
+
+# 连词成句判题引擎
+from answer_engine import AnswerEngine
+
 PORT = int(os.environ.get("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, "dist")
@@ -139,11 +157,11 @@ def _normalize_db_url(url):
 # 读取后立即规范化：内部短名补外部域名 + 补端口 5432（见 _normalize_db_url）。
 DATABASE_URL = _normalize_db_url(os.environ.get("DATABASE_URL", ""))
 try:
-    import psycopg2
-    import psycopg2.extras
-    _PSYCOPG2_OK = True
+    import pymysql
+    import pymysql.cursors
+    _PYMYSQL_OK = True
 except Exception:
-    _PSYCOPG2_OK = False
+    _PYMYSQL_OK = False
 
 
 def http_call(method, url, payload=None, headers=None, timeout=40):
@@ -1185,12 +1203,31 @@ TUTOR_SYSTEM_PROMPTS = {
 
 
 # 连接数据库前先自动修正地址
+
+
+def _parse_mysql_url(url):
+    """解析 MySQL 连接 URL，返回 pymysql.connect 参数"""
+    from urllib.parse import urlparse
+    # 去掉查询参数中的 sslmode 等
+    clean_url = url.split("?")[0] if "?" in url else url
+    parsed = urlparse(clean_url)
+    return {
+        "host": parsed.hostname,
+        "port": parsed.port or 4000,
+        "user": parsed.username,
+        "password": parsed.password,
+        "database": parsed.path.lstrip("/"),
+        "ssl": {"ssl_disabled": False},
+        "connect_timeout": 30,
+        "charset": "utf8mb4",
+    }
+
 def _square_conn():
-    fixed_url = _normalize_db_url(DATABASE_URL)
-    return psycopg2.connect(fixed_url, sslmode="require")
+    params = _parse_mysql_url(DATABASE_URL)
+    return pymysql.connect(**params)
 
 def _square_init():
-    if not (_PSYCOPG2_OK and DATABASE_URL):
+    if not (_PYMYSQL_OK and DATABASE_URL):
         return
     try:
         conn = _square_conn()
@@ -1198,18 +1235,18 @@ def _square_init():
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS square_items (
-                        id TEXT PRIMARY KEY,
-                        title TEXT NOT NULL,
+                        id VARCHAR(64) PRIMARY KEY,
+                        title VARCHAR(255) NOT NULL,
                         category TEXT NOT NULL,
-                        level TEXT NOT NULL,
+                        level VARCHAR(32) NOT NULL,
                         video_url TEXT,
                         description TEXT,
                         author TEXT,
                         thumbnail TEXT,
                         poster_url TEXT,
                         views INTEGER DEFAULT 0,
-                        tags TEXT DEFAULT '[]',
-                        sentences TEXT DEFAULT '[]',
+                        tags TEXT,
+                        sentences TEXT,
                         created_at BIGINT DEFAULT 0
                     )
                 """)
@@ -1236,6 +1273,129 @@ def _square_row_to_item(row):
         "sentences": json.loads(row["sentences"] or "[]"),
         "createdAt": row["created_at"] or 0,
     }
+
+
+
+
+# ============================================================
+# 连词成句游戏（RuQuest）—— 数据库表与查询
+# ============================================================
+
+def _quest_conn():
+    params = _parse_mysql_url(DATABASE_URL)
+    return pymysql.connect(**params)
+
+
+def _quest_init():
+    if not (_PYMYSQL_OK and DATABASE_URL):
+        return
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_course_packs (id VARCHAR(64) PRIMARY KEY, title VARCHAR(255) NOT NULL, description TEXT, level VARCHAR(32), `order` INTEGER NOT NULL DEFAULT 0, is_free BOOLEAN DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_courses (id VARCHAR(64) PRIMARY KEY, course_pack_id VARCHAR(64) NOT NULL REFERENCES quest_course_packs(id), title VARCHAR(255) NOT NULL, description TEXT, `order` INTEGER NOT NULL DEFAULT 0, created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_statements (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), `order` INTEGER NOT NULL, chinese TEXT NOT NULL, russian TEXT NOT NULL, stress_marked TEXT, grammatical_note TEXT, word_order_flexible BOOLEAN NOT NULL DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_words (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), `order` INTEGER NOT NULL, lemma VARCHAR(128) NOT NULL, form VARCHAR(128) NOT NULL, pos VARCHAR(32) NOT NULL, grammatical_case VARCHAR(32), number VARCHAR(16), gender VARCHAR(16), person INTEGER, tense VARCHAR(32), aspect VARCHAR(32), stress_position INTEGER, syntactic_role VARCHAR(64), is_fixed_position BOOLEAN NOT NULL DEFAULT FALSE, chunk_type VARCHAR(32) NOT NULL DEFAULT 'single_word', created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_acceptable_answers (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), word_order JSON NOT NULL, word_variants JSON NOT NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE, note TEXT, created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_records (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64), course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), completion_time INTEGER NOT NULL DEFAULT 0, correct_count INTEGER NOT NULL DEFAULT 0, total_count INTEGER NOT NULL DEFAULT 0, max_combo INTEGER NOT NULL DEFAULT 0, rating VARCHAR(8) NOT NULL DEFAULT 'C', created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_statement_id ON quest_words(statement_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_lemma ON quest_words(lemma)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_pos ON quest_words(pos)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_aa_statement_id ON quest_acceptable_answers(statement_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_course_id ON quest_learning_records(course_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_created_at ON quest_learning_records(created_at)")
+            conn.commit()
+            print("[quest] 数据库表初始化完成")
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[quest] 初始化数据库失败：", e)
+
+
+def _quest_get_course_with_statements(course_id):
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_courses WHERE id = %s", (course_id,))
+            course = cur.fetchone()
+            if not course:
+                return None
+            cur.execute("SELECT * FROM quest_statements WHERE course_id = %s ORDER BY `order`", (course_id,))
+            statements = cur.fetchall()
+            result = {"id": course["id"], "title": course["title"], "description": course["description"] or "", "order": course["order"], "statements": []}
+            for stmt in statements:
+                cur.execute("SELECT * FROM quest_words WHERE statement_id = %s ORDER BY `order`", (stmt["id"],))
+                words = cur.fetchall()
+                cur.execute("SELECT * FROM quest_acceptable_answers WHERE statement_id = %s ORDER BY is_default DESC", (stmt["id"],))
+                answers = cur.fetchall()
+                result["statements"].append({
+                    "id": stmt["id"], "order": stmt["order"], "chinese": stmt["chinese"],
+                    "russian": stmt["russian"], "stressMarked": stmt["stress_marked"] or "",
+                    "grammaticalNote": stmt["grammatical_note"] or "", "wordOrderFlexible": bool(stmt["word_order_flexible"]),
+                    "words": [{"order": w["order"], "lemma": w["lemma"], "form": w["form"], "pos": w["pos"],
+                        "grammaticalCase": w["grammatical_case"], "number": w["number"], "gender": w["gender"],
+                        "person": w["person"], "tense": w["tense"], "aspect": w["aspect"],
+                        "stressPosition": w["stress_position"], "syntacticRole": w["syntactic_role"],
+                        "isFixedPosition": bool(w["is_fixed_position"]), "chunkType": w["chunk_type"]} for w in words],
+                    "acceptableAnswers": [{"wordOrder": json.loads(a["word_order"]) if isinstance(a["word_order"], str) else a["word_order"], "wordVariants": json.loads(a["word_variants"]) if isinstance(a["word_variants"], str) else a["word_variants"],
+                        "isDefault": bool(a["is_default"]), "note": a["note"] or ""} for a in answers],
+                })
+            return result
+    finally:
+        conn.close()
+
+
+# 连词成句判题引擎
+from answer_engine import AnswerEngine
+
+
+def _quest_get_statement_by_id(statement_id):
+    """根据 ID 查询单条句子（含 words 标注和 acceptable_answers）"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_statements WHERE id = %s", (statement_id,))
+            stmt = cur.fetchone()
+            if not stmt:
+                return None
+
+            cur.execute("SELECT * FROM quest_words WHERE statement_id = %s ORDER BY `order`", (statement_id,))
+            words = cur.fetchall()
+
+            cur.execute("SELECT * FROM quest_acceptable_answers WHERE statement_id = %s ORDER BY is_default DESC", (statement_id,))
+            answers = cur.fetchall()
+
+            return {
+                "id": stmt["id"],
+                "order": stmt["order"],
+                "chinese": stmt["chinese"],
+                "russian": stmt["russian"],
+                "stressMarked": stmt["stress_marked"] or "",
+                "grammaticalNote": stmt["grammatical_note"] or "",
+                "wordOrderFlexible": bool(stmt["word_order_flexible"]),
+                "words": [
+                    {
+                        "order": w["order"], "lemma": w["lemma"], "form": w["form"],
+                        "pos": w["pos"], "grammaticalCase": w["grammatical_case"],
+                        "number": w["number"], "gender": w["gender"], "person": w["person"],
+                        "tense": w["tense"], "aspect": w["aspect"],
+                        "stressPosition": w["stress_position"], "syntacticRole": w["syntactic_role"],
+                        "isFixedPosition": bool(w["is_fixed_position"]), "chunkType": w["chunk_type"],
+                    }
+                    for w in words
+                ],
+                "acceptableAnswers": [
+                    {
+                        "wordOrder": json.loads(a["word_order"]) if isinstance(a["word_order"], str) else a["word_order"],
+                        "wordVariants": json.loads(a["word_variants"]) if isinstance(a["word_variants"], str) else a["word_variants"],
+                        "isDefault": bool(a["is_default"]), "note": a["note"] or "",
+                    }
+                    for a in answers
+                ],
+            }
+    finally:
+        conn.close()
 
 
 # ---- 视频上传相关（只需配置对象存储）----
@@ -1273,7 +1433,7 @@ async def _upload_to_minio(file_stream, filename):
 def _square_list():
     conn = _square_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
             cur.execute("SELECT * FROM square_items ORDER BY created_at DESC")
             rows = cur.fetchall()
         return [_square_row_to_item(r) for r in rows]
@@ -1483,7 +1643,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _handle_square_list(self):
-        if not (_PSYCOPG2_OK and DATABASE_URL):
+        if not (_PYMYSQL_OK and DATABASE_URL):
             return self._json(200, {"ok": True, "list": []})
         try:
             return self._json(200, {"ok": True, "list": _square_list()})
@@ -1491,11 +1651,61 @@ class Handler(BaseHTTPRequestHandler):
             print("[square] 读取列表失败：", e)
             return self._json(200, {"ok": True, "list": []})
 
+
+    def _handle_course_complete(self, data):
+        """保存课程练习记录"""
+        try:
+            course_id = (data.get("course_id") or "").strip()
+            if not course_id:
+                return self._json(400, {"ok": False, "error": "缺少 course_id"})
+            completion_time = int(data.get("completion_time") or 0)
+            correct_count = int(data.get("correct_count") or 0)
+            total_count = int(data.get("total_count") or 0)
+            max_combo = int(data.get("max_combo") or 0)
+            rating = (data.get("rating") or "C").strip()
+            record_id = uuid.uuid4().hex[:24]
+            created_at = int(time.time() * 1000)
+
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO quest_learning_records (id, user_id, course_id, completion_time, correct_count, total_count, max_combo, rating, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (record_id, "", course_id, completion_time, correct_count, total_count, max_combo, rating, created_at)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return self._json(200, {"ok": True, "data": {"id": record_id}})
+        except Exception as e:
+            print("[quest] 保存练习记录失败:", e)
+            return self._json(500, {"ok": False, "error": str(e)})
+
+    def _handle_answer_submit(self, data):
+        """连词成句判题：接收用户输入，返回结构化判题结果"""
+        if not (_PYMYSQL_OK and DATABASE_URL):
+            return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+        statement_id = (data.get("statementId") or "").strip()
+        user_input = data.get("userInput") or ""
+        if not statement_id:
+            return self._json(400, {"ok": False, "error": "缺少 statementId"})
+        if not user_input.strip():
+            return self._json(400, {"ok": False, "error": "缺少 userInput"})
+        try:
+            statement = _quest_get_statement_by_id(statement_id)
+            if statement is None:
+                return self._json(404, {"ok": False, "error": "句子不存在: " + statement_id})
+            engine = AnswerEngine(statement)
+            result = engine.judge(user_input)
+            return self._json(200, {"ok": True, "data": result})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "判题异常：" + str(e)})
+
     def _handle_square_submit(self, data):
         err = self._check_admin(data)
         if err:
             return err
-        if not (_PSYCOPG2_OK and DATABASE_URL):
+        if not (_PYMYSQL_OK and DATABASE_URL):
             return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
         if not (data.get("id") and data.get("title")):
             return self._json(400, {"ok": False, "error": "缺少必填字段"})
@@ -1538,7 +1748,7 @@ class Handler(BaseHTTPRequestHandler):
         err = self._check_admin(data)
         if err:
             return err
-        if not (_PSYCOPG2_OK and DATABASE_URL):
+        if not (_PYMYSQL_OK and DATABASE_URL):
             return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
         if not data.get("id"):
             return self._json(400, {"ok": False, "error": "缺少 id"})
@@ -1614,12 +1824,30 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/square/list":
             return self._handle_square_list()
         if path == "/api/tts":
-            # TTS文本转语音（GET，支持直接用audio标签播放；voice=female/male 切换男女声）
+            # TTS文本转语音（GET，支持直接用audio标签播放；voice=female/male 切换男女声；rate=0.5~2.0 朗读速度）
             query = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(query)
             text = (params.get("text", [""])[0] or "").strip()
             voice = (params.get("voice", [""])[0] or "").strip()
-            return self._handle_tts(text, voice)
+            rate = (params.get("rate", [""])[0] or "").strip()
+            return self._handle_tts(text, voice, rate)
+
+        # 连词成句游戏（RuQuest）：查询课程的全部句子（含 words 语法标注）
+        if path.startswith("/api/courses/") and path.endswith("/statements"):
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            parts = path.strip("/").split("/")
+            if len(parts) >= 4:
+                course_id = parts[2]
+                try:
+                    data = _quest_get_course_with_statements(course_id)
+                    if data is None:
+                        return self._json(404, {"ok": False, "error": "课程不存在: " + course_id})
+                    return self._json(200, {"ok": True, "data": data})
+                except Exception as e:
+                    return self._json(500, {"ok": False, "error": str(e)})
+            return self._json(400, {"ok": False, "error": "路径格式应为 /api/courses/<course_id>/statements"})
+
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
@@ -1776,7 +2004,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.TTS_VOICE
         return self.TTS_VOICES.get(str(voice).strip().lower(), self.TTS_VOICE)
 
-    def _tts_edge(self, text, voice=None):
+    def _tts_edge(self, text, voice=None, rate=None):
         """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。
         voice 可为 female/male（或具体声音名），缺省为俄语女声 Svetlana。"""
         use_voice = self._pick_tts_voice(voice)
@@ -1787,7 +2015,16 @@ class Handler(BaseHTTPRequestHandler):
             # 最多重试3次，应对网络抖动
             for attempt in range(3):
                 try:
-                    communicate = edge_tts.Communicate(text, use_voice)
+                    rate_str = None
+                    if rate:
+                        try:
+                            rv = float(rate)
+                            pct = int(round((rv - 1.0) * 100))
+                            pct = max(-80, min(150, pct))
+                            rate_str = ("+" if pct >= 0 else "-") + str(abs(pct)) + "%"
+                        except Exception:
+                            rate_str = None
+                    communicate = edge_tts.Communicate(text, use_voice, rate=rate_str) if rate_str else edge_tts.Communicate(text, use_voice)
                     chunks = []
 
                     async def _collect():
@@ -1809,7 +2046,7 @@ class Handler(BaseHTTPRequestHandler):
             print("[TTS] edge-tts 异常：", e)
             return None
 
-    def _handle_tts(self, text, voice=None):
+    def _handle_tts(self, text, voice=None, rate=None):
         """TTS文本转语音：优先使用 edge-tts 微软神经语音（mp3），失败时回退 Google TTS（mp3）。
         用于浏览器没有俄语语音包时的降级方案。voice 支持 female/male 切换男女声。
         """
@@ -1820,7 +2057,7 @@ class Handler(BaseHTTPRequestHandler):
             text = text[:500]
 
         # ---- 优先：edge-tts 微软神经语音 ----
-        audio = self._tts_edge(text, voice)
+        audio = self._tts_edge(text, voice, rate)
         if audio:
             self.send_response(200)
             self._cors()
@@ -2546,6 +2783,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_square_submit(data)
             if path == "/api/square/delete":
                 return self._handle_square_delete(data)
+            if path == "/api/answer/submit":
+                return self._handle_answer_submit(data)
+            if path == "/api/course/complete":
+                return self._handle_course_complete(data)
             if path == "/api/admin/check":
                 return self._handle_admin_check(data)
             if path == "/api/subs":
@@ -2678,6 +2919,7 @@ if __name__ == "__main__":
     if os.environ.get("NO_BROWSER") != "1":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     _square_init()
+    _quest_init()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

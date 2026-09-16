@@ -1,6 +1,6 @@
 yt-dlp
 razdel
-psycopg2-binary
+pymysql
 vosk
 edge-tts
 av
