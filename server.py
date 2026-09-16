@@ -1316,12 +1316,108 @@ def _quest_init():
                     print("[quest] 迁移：已添加 sequence_order 字段")
                 except Exception:
                     pass
+                # 迁移：课程包商城字段
+                for _col, _type in [
+                    ("cover_url", "VARCHAR(512)"),
+                    ("category", "VARCHAR(64)"),
+                    ("tag", "VARCHAR(64)"),
+                    ("author", "VARCHAR(128)"),
+                    ("lesson_count", "INTEGER DEFAULT 0"),
+                    ("learner_count", "INTEGER DEFAULT 0"),
+                ]:
+                    try:
+                        cur.execute(f"ALTER TABLE quest_course_packs ADD COLUMN {_col} {_type}")
+                        print(f"[quest] 迁移：quest_course_packs 已添加 {_col}")
+                    except Exception:
+                        pass
+                # 迁移：课程表加封面
+                try:
+                    cur.execute("ALTER TABLE quest_courses ADD COLUMN cover_url VARCHAR(512)")
+                    print("[quest] 迁移：quest_courses 已添加 cover_url")
+                except Exception:
+                    pass
             conn.commit()
             print("[quest] 数据库表初始化完成")
         finally:
             conn.close()
     except Exception as e:
         print("[quest] 初始化数据库失败：", e)
+
+
+def _quest_get_store_courses():
+    """商城课程列表：返回课程包+课程，供前端商城页渲染"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            # 查询所有课程包
+            cur.execute("SELECT * FROM quest_course_packs ORDER BY `order` ASC, created_at ASC")
+            packs = cur.fetchall()
+            # 查询所有课程
+            cur.execute("SELECT * FROM quest_courses ORDER BY `order` ASC, created_at ASC")
+            courses = cur.fetchall()
+            # 统计每个课程的句子数
+            cur.execute("SELECT course_id, COUNT(*) as cnt FROM quest_statements GROUP BY course_id")
+            stmt_counts = {row["course_id"]: row["cnt"] for row in cur.fetchall()}
+
+        # 组装课程列表（每个课程带上所属课程包信息）
+        pack_map = {p["id"]: p for p in packs}
+        course_list = []
+        for c in courses:
+            pack = pack_map.get(c.get("course_pack_id"), {})
+            lesson_count = c.get("lesson_count") or stmt_counts.get(c["id"], 0) or pack.get("lesson_count", 0)
+            course_list.append({
+                "id": c["id"],
+                "title": c["title"],
+                "description": c.get("description") or pack.get("description") or "",
+                "cover_url": c.get("cover_url") or pack.get("cover_url") or "",
+                "category": pack.get("category") or "推荐",
+                "tag": pack.get("tag") or "",
+                "author": pack.get("author") or "句乐部",
+                "lesson_count": lesson_count,
+                "learner_count": pack.get("learner_count", 0),
+                "course_pack_id": c.get("course_pack_id"),
+            })
+
+        # Banner：取前3个有封面的课程
+        banners = []
+        for c in course_list[:3]:
+            banners.append({
+                "id": c["id"],
+                "title": c["title"],
+                "cover_url": c["cover_url"],
+                "tag": c["tag"] or "新手推荐",
+            })
+
+        # 分类：从课程的 category 去重
+        categories = ["推荐"]
+        for c in course_list:
+            if c["category"] and c["category"] not in categories:
+                categories.append(c["category"])
+
+        # 分节：按分类分组
+        sections = []
+        for cat in categories:
+            cat_courses = [c for c in course_list if c["category"] == cat or cat == "推荐"]
+            if cat_courses:
+                title_map = {
+                    "推荐": "本周主编精选",
+                    "零基础": "从第一句开始学",
+                    "考试备考": "备考冲刺不刷题",
+                    "教材同步": "教材同步精讲",
+                    "高频词汇": "高频词汇速记",
+                }
+                sections.append({
+                    "title": title_map.get(cat, cat),
+                    "courses": cat_courses,
+                })
+
+        return {
+            "banners": banners,
+            "categories": categories,
+            "sections": sections,
+        }
+    finally:
+        conn.close()
 
 
 def _quest_get_course_with_statements(course_id):
@@ -1862,6 +1958,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(500, {"ok": False, "error": str(e)})
             return self._json(400, {"ok": False, "error": "路径格式应为 /api/courses/<course_id>/statements"})
 
+        # 商城课程列表
+        if path == "/api/store/courses":
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            try:
+                data = _quest_get_store_courses()
+                return self._json(200, {"ok": True, "data": data})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
