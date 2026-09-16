@@ -1295,7 +1295,7 @@ def _quest_init():
             with conn.cursor() as cur:
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_course_packs (id VARCHAR(64) PRIMARY KEY, title VARCHAR(255) NOT NULL, description TEXT, level VARCHAR(32), `order` INTEGER NOT NULL DEFAULT 0, is_free BOOLEAN DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_courses (id VARCHAR(64) PRIMARY KEY, course_pack_id VARCHAR(64) NOT NULL REFERENCES quest_course_packs(id), title VARCHAR(255) NOT NULL, description TEXT, `order` INTEGER NOT NULL DEFAULT 0, created_at BIGINT DEFAULT 0)")
-                cur.execute("CREATE TABLE IF NOT EXISTS quest_statements (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), `order` INTEGER NOT NULL, chinese TEXT NOT NULL, russian TEXT NOT NULL, stress_marked TEXT, grammatical_note TEXT, word_order_flexible BOOLEAN NOT NULL DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_statements (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), `order` INTEGER NOT NULL, chinese TEXT NOT NULL, russian TEXT NOT NULL, stress_marked TEXT, grammatical_note TEXT, word_order_flexible BOOLEAN NOT NULL DEFAULT TRUE, sequence_id VARCHAR(64), sequence_order INTEGER, created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_words (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), `order` INTEGER NOT NULL, lemma VARCHAR(128) NOT NULL, form VARCHAR(128) NOT NULL, pos VARCHAR(32) NOT NULL, grammatical_case VARCHAR(32), number VARCHAR(16), gender VARCHAR(16), person INTEGER, tense VARCHAR(32), aspect VARCHAR(32), stress_position INTEGER, syntactic_role VARCHAR(64), is_fixed_position BOOLEAN NOT NULL DEFAULT FALSE, chunk_type VARCHAR(32) NOT NULL DEFAULT 'single_word', created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_acceptable_answers (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), word_order JSON NOT NULL, word_variants JSON NOT NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE, note TEXT, created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_records (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64), course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), completion_time INTEGER NOT NULL DEFAULT 0, correct_count INTEGER NOT NULL DEFAULT 0, total_count INTEGER NOT NULL DEFAULT 0, max_combo INTEGER NOT NULL DEFAULT 0, rating VARCHAR(8) NOT NULL DEFAULT 'C', created_at BIGINT DEFAULT 0)")
@@ -1305,6 +1305,17 @@ def _quest_init():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_aa_statement_id ON quest_acceptable_answers(statement_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_course_id ON quest_learning_records(course_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_created_at ON quest_learning_records(created_at)")
+                # 迁移：给 quest_statements 加渐进式序列字段
+                try:
+                    cur.execute("ALTER TABLE quest_statements ADD COLUMN sequence_id VARCHAR(64)")
+                    print("[quest] 迁移：已添加 sequence_id 字段")
+                except Exception:
+                    pass
+                try:
+                    cur.execute("ALTER TABLE quest_statements ADD COLUMN sequence_order INTEGER")
+                    print("[quest] 迁移：已添加 sequence_order 字段")
+                except Exception:
+                    pass
             conn.commit()
             print("[quest] 数据库表初始化完成")
         finally:
@@ -1333,6 +1344,7 @@ def _quest_get_course_with_statements(course_id):
                     "id": stmt["id"], "order": stmt["order"], "chinese": stmt["chinese"],
                     "russian": stmt["russian"], "stressMarked": stmt["stress_marked"] or "",
                     "grammaticalNote": stmt["grammatical_note"] or "", "wordOrderFlexible": bool(stmt["word_order_flexible"]),
+                    "sequenceId": stmt.get("sequence_id"), "sequenceOrder": stmt.get("sequence_order"),
                     "words": [{"order": w["order"], "lemma": w["lemma"], "form": w["form"], "pos": w["pos"],
                         "grammaticalCase": w["grammatical_case"], "number": w["number"], "gender": w["gender"],
                         "person": w["person"], "tense": w["tense"], "aspect": w["aspect"],
@@ -1374,6 +1386,8 @@ def _quest_get_statement_by_id(statement_id):
                 "stressMarked": stmt["stress_marked"] or "",
                 "grammaticalNote": stmt["grammatical_note"] or "",
                 "wordOrderFlexible": bool(stmt["word_order_flexible"]),
+                "sequenceId": stmt.get("sequence_id"),
+                "sequenceOrder": stmt.get("sequence_order"),
                 "words": [
                     {
                         "order": w["order"], "lemma": w["lemma"], "form": w["form"],

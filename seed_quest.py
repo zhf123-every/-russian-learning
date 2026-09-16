@@ -3,7 +3,7 @@
 """
 连词成句游戏（RuQuest）—— 种子数据脚本
 
-注入 16 条 A1 级别俄语句子，覆盖：
+注入 22 条 A1 级别俄语句子（含 6 条渐进式累加演示），覆盖：
   - 名词第一格到第六格（每格至少一例）
   - 动词现在时、过去时、将来时（不同人称和数）
   - 形容词与名词的性数格一致
@@ -337,12 +337,105 @@ STATEMENTS = [
             w(2, "по-русски", "по-ру́сски", "adverb", stress_pos=2, role="adverbial_manner"),
         ],
     },
+    # ════════════════════════════════════════════════════════════
+    # 渐进式累加序列：Я люблю смотреть фильмы（我喜欢看电影）
+    # 6 道题，共享 sequence_id="seq_love_movies"
+    # ════════════════════════════════════════════════════════════
+    # ── 17. 我 → Я ──
+    {
+        "order": 17,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 1,
+        "chinese": "我",
+        "russian": "Я",
+        "stress_marked": "Я",
+        "grammatical_note": "人称代词 я 第一格单数，作主语。",
+        "word_order_flexible": False,
+        "words": [
+            w(0, "я", "Я", "pronoun", case="nom", number="sing", person=1, role="subject"),
+        ],
+    },
+    # ── 18. 喜欢 → люблю ──
+    {
+        "order": 18,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 2,
+        "chinese": "喜欢",
+        "russian": "люблю",
+        "stress_marked": "люблю́",
+        "grammatical_note": "动词 любить 第一人称单数现在时，作谓语。",
+        "word_order_flexible": False,
+        "words": [
+            w(0, "любить", "люблю́", "verb", number="sing", person=1, tense="present", aspect="imperf", stress_pos=2, role="predicate"),
+        ],
+    },
+    # ── 19. 我喜欢 → Я люблю ──
+    {
+        "order": 19,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 3,
+        "chinese": "我喜欢",
+        "russian": "Я люблю",
+        "stress_marked": "Я люблю́",
+        "grammatical_note": "主语 + 谓语结构；я 第一格，люблю 第一人称单数现在时。",
+        "word_order_flexible": True,
+        "words": [
+            w(0, "я", "Я", "pronoun", case="nom", number="sing", person=1, role="subject"),
+            w(1, "любить", "люблю́", "verb", number="sing", person=1, tense="present", aspect="imperf", stress_pos=2, role="predicate"),
+        ],
+    },
+    # ── 20. 看 → смотреть ──
+    {
+        "order": 20,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 4,
+        "chinese": "看",
+        "russian": "смотреть",
+        "stress_marked": "смотре́ть",
+        "grammatical_note": "动词 смотреть 不定式，作宾语（любить + 不定式）。",
+        "word_order_flexible": False,
+        "words": [
+            w(0, "смотреть", "смотре́ть", "verb", tense="infinitive", aspect="imperf", stress_pos=3, role="direct_object"),
+        ],
+    },
+    # ── 21. 看电影 → смотреть фильмы ──
+    {
+        "order": 21,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 5,
+        "chinese": "看电影",
+        "russian": "смотреть фильмы",
+        "stress_marked": "смотре́ть фи́льмы",
+        "grammatical_note": "不定式 + 第四格宾语；фильм 阳性名词复数第四格 фильмы。",
+        "word_order_flexible": True,
+        "words": [
+            w(0, "смотреть", "смотре́ть", "verb", tense="infinitive", aspect="imperf", stress_pos=3, role="predicate"),
+            w(1, "фильм", "фи́льмы", "noun", case="acc", number="plur", gender="masc", stress_pos=1, role="direct_object"),
+        ],
+    },
+    # ── 22. 我喜欢看电影 → Я люблю смотреть фильмы（完整句）──
+    {
+        "order": 22,
+        "sequence_id": "seq_love_movies",
+        "sequence_order": 6,
+        "chinese": "我喜欢看电影。",
+        "russian": "Я люблю смотреть фильмы.",
+        "stress_marked": "Я люблю́ смотре́ть фи́льмы.",
+        "grammatical_note": "любить + 不定式结构；я 第一格主语，люблю 第一人称单数现在时谓语，смотреть 不定式作宾语，фильмы 复数第四格作 смотреть 的宾语。",
+        "word_order_flexible": True,
+        "words": [
+            w(0, "я", "Я", "pronoun", case="nom", number="sing", person=1, role="subject"),
+            w(1, "любить", "люблю́", "verb", number="sing", person=1, tense="present", aspect="imperf", stress_pos=2, role="predicate"),
+            w(2, "смотреть", "смотре́ть", "verb", tense="infinitive", aspect="imperf", stress_pos=3, role="direct_object"),
+            w(3, "фильм", "фи́льмы", "noun", case="acc", number="plur", gender="masc", stress_pos=1, role="direct_object"),
+        ],
+    },
 ]
 
 
 def seed():
     print("=" * 60)
-    print("  连词成句游戏（RuQuest）—— 种子数据注入（16题）")
+    print("  连词成句游戏（RuQuest）—— 种子数据注入（22题，含渐进式序列）")
     print("=" * 60)
 
     conn = get_conn()
@@ -362,7 +455,7 @@ def seed():
             # ── 0. 建表 ──
             cur.execute("CREATE TABLE IF NOT EXISTS quest_course_packs (id VARCHAR(64) PRIMARY KEY, title VARCHAR(255) NOT NULL, description TEXT, level VARCHAR(32), `order` INTEGER NOT NULL DEFAULT 0, is_free BOOLEAN DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
             cur.execute("CREATE TABLE IF NOT EXISTS quest_courses (id VARCHAR(64) PRIMARY KEY, course_pack_id VARCHAR(64) NOT NULL, title VARCHAR(255) NOT NULL, description TEXT, `order` INTEGER NOT NULL DEFAULT 0, created_at BIGINT DEFAULT 0)")
-            cur.execute("CREATE TABLE IF NOT EXISTS quest_statements (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, `order` INTEGER NOT NULL, chinese TEXT NOT NULL, russian TEXT NOT NULL, stress_marked TEXT, grammatical_note TEXT, word_order_flexible BOOLEAN NOT NULL DEFAULT TRUE, created_at BIGINT DEFAULT 0)")
+            cur.execute("CREATE TABLE IF NOT EXISTS quest_statements (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, `order` INTEGER NOT NULL, chinese TEXT NOT NULL, russian TEXT NOT NULL, stress_marked TEXT, grammatical_note TEXT, word_order_flexible BOOLEAN NOT NULL DEFAULT TRUE, sequence_id VARCHAR(64), sequence_order INTEGER, created_at BIGINT DEFAULT 0)")
             cur.execute("CREATE TABLE IF NOT EXISTS quest_words (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL, `order` INTEGER NOT NULL, lemma VARCHAR(128) NOT NULL, form VARCHAR(128) NOT NULL, pos VARCHAR(32) NOT NULL, grammatical_case VARCHAR(32), number VARCHAR(16), gender VARCHAR(16), person INTEGER, tense VARCHAR(32), aspect VARCHAR(32), stress_position INTEGER, syntactic_role VARCHAR(64), is_fixed_position BOOLEAN NOT NULL DEFAULT FALSE, chunk_type VARCHAR(32) NOT NULL DEFAULT 'single_word', created_at BIGINT DEFAULT 0)")
             cur.execute("CREATE TABLE IF NOT EXISTS quest_acceptable_answers (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL, word_order JSON NOT NULL, word_variants JSON NOT NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE, note TEXT, created_at BIGINT DEFAULT 0)")
             cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_records (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64), course_id VARCHAR(64) NOT NULL, completion_time INTEGER NOT NULL DEFAULT 0, correct_count INTEGER NOT NULL DEFAULT 0, total_count INTEGER NOT NULL DEFAULT 0, max_combo INTEGER NOT NULL DEFAULT 0, rating VARCHAR(8) NOT NULL DEFAULT 'C', created_at BIGINT DEFAULT 0)")
@@ -402,9 +495,10 @@ def seed():
             for s in STATEMENTS:
                 stmt_id = gen_id()
                 cur.execute(
-                    "INSERT INTO quest_statements (id, course_id, `order`, chinese, russian, stress_marked, grammatical_note, word_order_flexible, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO quest_statements (id, course_id, `order`, chinese, russian, stress_marked, grammatical_note, word_order_flexible, sequence_id, sequence_order, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (stmt_id, course_id, s["order"], s["chinese"], s["russian"],
-                     s["stress_marked"], s["grammatical_note"], s["word_order_flexible"], now)
+                     s["stress_marked"], s["grammatical_note"], s["word_order_flexible"],
+                     s.get("sequence_id"), s.get("sequence_order"), now)
                 )
 
                 for wd in s["words"]:
@@ -437,7 +531,7 @@ def seed():
         print("=" * 60)
         print(f"  课程包 ID:  {pack_id}")
         print(f"  课程 ID:    {course_id}")
-        print(f"  句子数量:   {len(STATEMENTS)}")
+        print(f"  句子数量:   {len(STATEMENTS)}（含 6 条渐进式累加）")
         print(f"  单词标注:   {total_words}")
         print("")
         print("  语法覆盖:")
