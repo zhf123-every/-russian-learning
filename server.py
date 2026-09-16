@@ -1336,12 +1336,92 @@ def _quest_init():
                     print("[quest] 迁移：quest_courses 已添加 cover_url")
                 except Exception:
                     pass
+                # 迁移：单词和句子加发音URL
+                try:
+                    cur.execute("ALTER TABLE quest_words ADD COLUMN audio_url VARCHAR(512)")
+                    print("[quest] 迁移：quest_words 已添加 audio_url")
+                except Exception:
+                    pass
+                try:
+                    cur.execute("ALTER TABLE quest_statements ADD COLUMN audio_url VARCHAR(512)")
+                    print("[quest] 迁移：quest_statements 已添加 audio_url")
+                except Exception:
+                    pass
             conn.commit()
             print("[quest] 数据库表初始化完成")
         finally:
             conn.close()
     except Exception as e:
         print("[quest] 初始化数据库失败：", e)
+
+
+
+# ==========================================================
+# Yandex SpeechKit TTS 语音合成
+# ==========================================================
+
+YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY", "")
+YANDEX_TTS_VOICE = os.environ.get("YANDEX_TTS_VOICE", "alena")
+TTS_CACHE_DIR = os.path.join(BASE_DIR, "audio_cache")
+os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+
+
+def _tts_synthesize(text, voice=None):
+    """调用 Yandex SpeechKit 合成俄语语音，返回本地 mp3 路径"""
+    if not YANDEX_API_KEY:
+        return None, "未配置 YANDEX_API_KEY"
+    if not text or not text.strip():
+        return None, "文本为空"
+
+    voice = voice or YANDEX_TTS_VOICE
+    # 缓存文件名：用文本hash
+    import hashlib
+    cache_key = hashlib.md5(f"{text}_{voice}".encode("utf-8")).hexdigest()
+    cache_file = os.path.join(TTS_CACHE_DIR, f"{cache_key}.mp3")
+
+    # 有缓存直接返回
+    if os.path.isfile(cache_file):
+        return cache_file, None
+
+    # 调用 Yandex API
+    try:
+        import urllib.parse
+        data = urllib.parse.urlencode({
+            "text": text,
+            "voice": voice,
+            "format": "mp3",
+            "sampleRateHertz": "48000",
+            "lang": "ru-RU",
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
+            data=data,
+            headers={
+                "Authorization": f"Api-Key {YANDEX_API_KEY}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            audio_data = resp.read()
+            if len(audio_data) < 100:
+                return None, f"API返回异常: {audio_data[:200]}"
+            with open(cache_file, "wb") as f:
+                f.write(audio_data)
+            return cache_file, None
+    except Exception as e:
+        return None, f"TTS合成失败: {str(e)}"
+
+
+def _tts_get_or_synthesize(text, voice=None):
+    """获取或合成语音，返回可访问的URL路径"""
+    cache_file, err = _tts_synthesize(text, voice)
+    if err:
+        return None, err
+    # 返回相对URL（后端会服务 audio_cache 目录）
+    filename = os.path.basename(cache_file)
+    return f"/audio_cache/{filename}", None
 
 
 def _quest_get_store_courses():
@@ -1995,7 +2075,8 @@ class Handler(BaseHTTPRequestHandler):
             ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
             ".json": "application/json", ".svg": "image/svg+xml",
             ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",
-            ".txt": "text/plain",
+            ".txt": "text/plain", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+            ".ogg": "audio/ogg",
         }.get(ext, "application/octet-stream")
         if "gzip" in self.headers.get("Accept-Encoding", "") and os.path.isfile(full + ".gz"):
             self._serve_file(full + ".gz", ctype, content_encoding="gzip")
@@ -2123,6 +2204,63 @@ class Handler(BaseHTTPRequestHandler):
             return self.TTS_VOICE
         return self.TTS_VOICES.get(str(voice).strip().lower(), self.TTS_VOICE)
 
+    def _tts_yandex(self, text, voice=None):
+        """调用 Yandex SpeechKit 合成俄语音频（mp3），带本地缓存。
+        Yandex 是俄语母语级音质，自动处理重音和同形异义词。
+        成功返回音频字节，失败返回 None。"""
+        api_key = os.environ.get("YANDEX_API_KEY", "")
+        if not api_key:
+            return None
+        if not text or not text.strip():
+            return None
+        voice = voice or os.environ.get("YANDEX_TTS_VOICE", "alena")
+        # 缓存
+        import hashlib
+        cache_dir = os.path.join(BASE_DIR, "audio_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_key = hashlib.md5(f"yandex_{text}_{voice}".encode("utf-8")).hexdigest()
+        cache_file = os.path.join(cache_dir, f"{cache_key}.mp3")
+        if os.path.isfile(cache_file):
+            try:
+                with open(cache_file, "rb") as f:
+                    return f.read()
+            except Exception:
+                pass
+        # 调用 API
+        try:
+            import urllib.parse
+            data = urllib.parse.urlencode({
+                "text": text,
+                "voice": voice,
+                "format": "mp3",
+                "sampleRateHertz": "48000",
+                "lang": "ru-RU",
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
+                data=data,
+                headers={
+                    "Authorization": f"Api-Key {api_key}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                audio_data = resp.read()
+                if len(audio_data) < 100:
+                    print("[TTS] Yandex 返回异常:", audio_data[:200])
+                    return None
+                # 存缓存
+                try:
+                    with open(cache_file, "wb") as f:
+                        f.write(audio_data)
+                except Exception:
+                    pass
+                return audio_data
+        except Exception as e:
+            print("[TTS] Yandex 合成失败:", e)
+            return None
+
     def _tts_edge(self, text, voice=None, rate=None):
         """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。
         voice 可为 female/male（或具体声音名），缺省为俄语女声 Svetlana。"""
@@ -2166,16 +2304,28 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _handle_tts(self, text, voice=None, rate=None):
-        """TTS文本转语音：优先使用 edge-tts 微软神经语音（mp3），失败时回退 Google TTS（mp3）。
+        """TTS文本转语音：优先 Yandex SpeechKit（俄语母语级），回退 edge-tts，最后 Google TTS。
         用于浏览器没有俄语语音包时的降级方案。voice 支持 female/male 切换男女声。
         """
         if not text:
             return self._json(400, {"ok": False, "error": "缺少文本参数"})
-        # edge-tts 建议短文本（单句调用约30-100字符），超长截断
+        # 超长截断
         if len(text) > 500:
             text = text[:500]
 
-        # ---- 优先：edge-tts 微软神经语音 ----
+        # ---- 首选：Yandex SpeechKit（俄语母语级，自动重音）----
+        audio = self._tts_yandex(text, voice)
+        if audio:
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            self.wfile.write(audio)
+            return None
+
+        # ---- 回退：edge-tts 微软神经语音 ----
         audio = self._tts_edge(text, voice, rate)
         if audio:
             self.send_response(200)
@@ -2902,6 +3052,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_square_submit(data)
             if path == "/api/square/delete":
                 return self._handle_square_delete(data)
+            if path == "/api/tts":
+                text = (data.get("text") or "").strip()
+                voice = data.get("voice")
+                item_id = data.get("id")
+                item_type = data.get("type")  # "word" or "statement"
+                if not text:
+                    return self._json(400, {"ok": False, "error": "text不能为空"})
+                # 调用 Yandex（或回退）生成音频，存缓存
+                audio_bytes = self._tts_yandex(text, voice)
+                if not audio_bytes:
+                    audio_bytes = self._tts_edge(text, voice)
+                if not audio_bytes:
+                    return self._json(500, {"ok": False, "error": "TTS合成失败"})
+                # 存到 audio_cache 并返回 URL
+                import hashlib
+                cache_dir = os.path.join(BASE_DIR, "audio_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                cache_key = hashlib.md5(f"{text}_{voice or 'default'}".encode("utf-8")).hexdigest()
+                cache_file = os.path.join(cache_dir, f"{cache_key}.mp3")
+                if not os.path.isfile(cache_file):
+                    with open(cache_file, "wb") as f:
+                        f.write(audio_bytes)
+                audio_url = f"/audio_cache/{cache_key}.mp3"
+                # 更新数据库
+                if item_id and item_type in ("word", "statement"):
+                    try:
+                        conn = _quest_conn()
+                        try:
+                            with conn.cursor() as cur:
+                                table = "quest_words" if item_type == "word" else "quest_statements"
+                                cur.execute(f"UPDATE {table} SET audio_url=%s WHERE id=%s", (audio_url, item_id))
+                            conn.commit()
+                        finally:
+                            conn.close()
+                    except Exception as e:
+                        print(f"[tts] 更新数据库失败: {e}")
+                return self._json(200, {"ok": True, "audio_url": audio_url})
             if path == "/api/answer/submit":
                 return self._handle_answer_submit(data)
             if path == "/api/course/complete":
