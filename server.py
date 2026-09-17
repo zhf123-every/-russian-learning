@@ -1595,7 +1595,7 @@ def _quest_get_course_with_sequences(course_id):
 
 
 def _quest_get_course_build_steps(course_id):
-    """查询课程的渐进构建步骤（quest_build_steps 表）"""
+    """查询课程的渐进构建步骤（quest_build_steps 表），为每个unit匹配完整句的words"""
     conn = _quest_conn()
     try:
         with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
@@ -1609,8 +1609,14 @@ def _quest_get_course_build_steps(course_id):
             stmt_ids = [s["id"] for s in statements]
             if not stmt_ids:
                 return {"id": course["id"], "title": course["title"], "totalSequences": 0, "sequences": []}
-            # 查询 quest_build_steps
+            # 查询所有完整句的 words
             ph = ", ".join(["%s"] * len(stmt_ids))
+            cur.execute(f"SELECT * FROM quest_words WHERE statement_id IN ({ph}) ORDER BY statement_id, `order`", stmt_ids)
+            all_words = cur.fetchall()
+            words_map = {}
+            for w in all_words:
+                words_map.setdefault(w["statement_id"], []).append(w)
+            # 查询 quest_build_steps
             cur.execute(f"SELECT * FROM quest_build_steps WHERE sequence_id IN ({ph}) ORDER BY sequence_id, step_order", stmt_ids)
             steps = cur.fetchall()
             # 按 sequence_id 分组
@@ -1620,6 +1626,81 @@ def _quest_get_course_build_steps(course_id):
                 if sid not in seq_dict:
                     seq_dict[sid] = []
                 seq_dict[sid].append(step)
+            
+            def _normalize(text):
+                """去除标点，小写，用于匹配"""
+                return re.sub(r'[^\w\s]', '', text or '').lower().strip()
+            
+            def _match_words(target_text, full_words):
+                """从完整句的words中匹配target_text中的词"""
+                if not full_words:
+                    return []
+                target_words = [w for w in _normalize(target_text).split() if w]
+                if not target_words:
+                    return []
+                result = []
+                used_indices = set()
+                for tw in target_words:
+                    matched = None
+                    # 先精确匹配form
+                    for i, fw in enumerate(full_words):
+                        if i not in used_indices and _normalize(fw.get("form", "")) == tw:
+                            matched = (i, fw)
+                            break
+                    # 再匹配lemma
+                    if not matched:
+                        for i, fw in enumerate(full_words):
+                            if i not in used_indices and _normalize(fw.get("lemma", "")) == tw:
+                                matched = (i, fw)
+                                break
+                    # 前缀匹配（词形变化）
+                    if not matched:
+                        for i, fw in enumerate(full_words):
+                            if i not in used_indices:
+                                f = _normalize(fw.get("form", ""))
+                                l = _normalize(fw.get("lemma", ""))
+                                if f.startswith(tw[:3]) or tw.startswith(f[:3]) or l.startswith(tw[:3]):
+                                    matched = (i, fw)
+                                    break
+                    if matched:
+                        i, fw = matched
+                        used_indices.add(i)
+                        result.append({
+                            "order": len(result),
+                            "lemma": fw.get("lemma", ""),
+                            "form": fw.get("form", tw),
+                            "pos": fw.get("pos", ""),
+                            "grammaticalCase": fw.get("grammatical_case", ""),
+                            "number": fw.get("number", ""),
+                            "gender": fw.get("gender", ""),
+                            "person": fw.get("person"),
+                            "tense": fw.get("tense", ""),
+                            "aspect": fw.get("aspect", ""),
+                            "stressPosition": fw.get("stress_position", -1),
+                            "syntacticRole": fw.get("syntactic_role", ""),
+                            "isFixedPosition": bool(fw.get("is_fixed_position", False)),
+                            "chunkType": fw.get("chunk_type", "single_word"),
+                        })
+                    else:
+                        # 找不到匹配，创建默认word
+                        result.append({
+                            "order": len(result),
+                            "lemma": tw,
+                            "form": tw,
+                            "pos": "",
+                            "grammaticalCase": "",
+                            "number": "",
+                            "gender": "",
+                            "person": None,
+                            "tense": "",
+                            "aspect": "",
+                            "stressPosition": -1,
+                            "syntacticRole": "",
+                            "isFixedPosition": False,
+                            "chunkType": "single_word",
+                        })
+                return result
+            
             # 按课程中 statement 的顺序组织 sequences
             sequences = []
             for stmt in statements:
@@ -1627,18 +1708,41 @@ def _quest_get_course_build_steps(course_id):
                 seq_steps = seq_dict.get(sid, [])
                 if not seq_steps:
                     continue
+                full_words = words_map.get(sid, [])
                 # 找到完整句步骤（is_complete=1 或 step_order 最大的）
                 complete_step = max(seq_steps, key=lambda s: s.get("step_order") or 1)
                 units = []
                 for step in sorted(seq_steps, key=lambda s: s.get("step_order") or 1):
+                    target = step["target_sentence"]
+                    # 完整句步骤直接用完整句的words
+                    if step.get("is_complete", 0) or step == complete_step:
+                        step_words = [{
+                            "order": w["order"],
+                            "lemma": w.get("lemma", ""),
+                            "form": w.get("form", ""),
+                            "pos": w.get("pos", ""),
+                            "grammaticalCase": w.get("grammatical_case", ""),
+                            "number": w.get("number", ""),
+                            "gender": w.get("gender", ""),
+                            "person": w.get("person"),
+                            "tense": w.get("tense", ""),
+                            "aspect": w.get("aspect", ""),
+                            "stressPosition": w.get("stress_position", -1),
+                            "syntacticRole": w.get("syntactic_role", ""),
+                            "isFixedPosition": bool(w.get("is_fixed_position", False)),
+                            "chunkType": w.get("chunk_type", "single_word"),
+                        } for w in full_words]
+                    else:
+                        step_words = _match_words(target, full_words)
                     units.append({
                         "id": step["id"],
                         "stepOrder": step["step_order"],
-                        "russian": step["target_sentence"],
+                        "russian": target,
                         "chinese": step["chinese"] or "",
                         "action": step["action"] or "build",
                         "newElement": step["new_element"] or "",
                         "isComplete": bool(step.get("is_complete", 0)),
+                        "words": step_words,
                     })
                 sequences.append({
                     "sequenceId": sid,
