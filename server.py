@@ -1594,6 +1594,65 @@ def _quest_get_course_with_sequences(course_id):
         conn.close()
 
 
+def _quest_get_course_build_steps(course_id):
+    """查询课程的渐进构建步骤（quest_build_steps 表）"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_courses WHERE id = %s", (course_id,))
+            course = cur.fetchone()
+            if not course:
+                return None
+            # 查询该课程的所有 statements（它们的 id 就是 build_steps 的 sequence_id）
+            cur.execute("SELECT id, russian, chinese, `order` FROM quest_statements WHERE course_id = %s ORDER BY `order`", (course_id,))
+            statements = cur.fetchall()
+            stmt_ids = [s["id"] for s in statements]
+            if not stmt_ids:
+                return {"id": course["id"], "title": course["title"], "totalSequences": 0, "sequences": []}
+            # 查询 quest_build_steps
+            ph = ", ".join(["%s"] * len(stmt_ids))
+            cur.execute(f"SELECT * FROM quest_build_steps WHERE sequence_id IN ({ph}) ORDER BY sequence_id, step_order", stmt_ids)
+            steps = cur.fetchall()
+            # 按 sequence_id 分组
+            seq_dict = {}
+            for step in steps:
+                sid = step["sequence_id"]
+                if sid not in seq_dict:
+                    seq_dict[sid] = []
+                seq_dict[sid].append(step)
+            # 按课程中 statement 的顺序组织 sequences
+            sequences = []
+            for stmt in statements:
+                sid = stmt["id"]
+                seq_steps = seq_dict.get(sid, [])
+                if not seq_steps:
+                    continue
+                # 找到完整句步骤（is_complete=1 或 step_order 最大的）
+                complete_step = max(seq_steps, key=lambda s: s.get("step_order") or 1)
+                units = []
+                for step in sorted(seq_steps, key=lambda s: s.get("step_order") or 1):
+                    units.append({
+                        "id": step["id"],
+                        "stepOrder": step["step_order"],
+                        "russian": step["target_sentence"],
+                        "chinese": step["chinese"] or "",
+                        "action": step["action"] or "build",
+                        "newElement": step["new_element"] or "",
+                        "isComplete": bool(step.get("is_complete", 0)),
+                    })
+                sequences.append({
+                    "sequenceId": sid,
+                    "fullRussian": complete_step["target_sentence"],
+                    "fullChinese": complete_step["chinese"] or stmt["chinese"],
+                    "totalSteps": len(units),
+                    "units": units,
+                })
+            return {"id": course["id"], "title": course["title"], "description": course["description"] or "",
+                "order": course["order"], "totalSequences": len(sequences), "sequences": sequences}
+    finally:
+        conn.close()
+
+
 # 连词成句判题引擎
 from answer_engine import AnswerEngine
 
@@ -2103,6 +2162,22 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._json(500, {"ok": False, "error": str(e)})
             return self._json(400, {"ok": False, "error": "路径格式应为 /api/courses/<course_id>/statements"})
+
+        # 渐进构建步骤：查询课程的渐进构建数据（quest_build_steps 表）
+        if path.startswith("/api/courses/") and path.endswith("/build-steps"):
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            parts = path.strip("/").split("/")
+            if len(parts) >= 4:
+                course_id = parts[2]
+                try:
+                    data = _quest_get_course_build_steps(course_id)
+                    if data is None:
+                        return self._json(404, {"ok": False, "error": "课程不存在: " + course_id})
+                    return self._json(200, {"ok": True, "data": data})
+                except Exception as e:
+                    return self._json(500, {"ok": False, "error": str(e)})
+            return self._json(400, {"ok": False, "error": "路径格式应为 /api/courses/<course_id>/build-steps"})
 
         # 商城课程列表
         if path == "/api/store/courses":
