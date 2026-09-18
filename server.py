@@ -1500,6 +1500,193 @@ def _quest_get_store_courses():
         conn.close()
 
 
+# ==========================================================
+# 课程包 / 单元 / 渐进构建步骤（句型家族，数据驱动）
+# ==========================================================
+
+# sequence_id -> 家族中文名（数据表不存家族名，此处维护权威映射；未命中时 family_name 返回空，前端降级显示 sequence_id）
+_QUEST_FAMILY_NAMES = {
+    "u1_f1_seq": "问候与寒暄",
+    "u1_f2_seq": "自我介绍",
+    "u1_f3_seq": "身份与国籍",
+    "u2_f1_seq": "地点表达（Где...?）",
+    "u2_f2_seq": "主语+地点副词",
+    "u2_f3_seq": "方位词（здесь/там/тут）",
+    "u3_f1_seq": "拥有表达（У меня есть...）",
+    "u4_f1_seq": "现在时动词（Я работаю...）",
+    "u4_f2_seq": "生活状态（Я живу...）",
+    "u4_f3_seq": "日常活动（Я делаю...）",
+    "u5_f1_seq": "步行运动（Я иду...）",
+    "u5_f2_seq": "乘车运动（Я еду...）",
+    "u5_f3_seq": "来去方向（Я прихожу/ухожу）",
+    "u5_f4_seq": "出发离开（Я ухожу...）",
+    "u6_f1_seq": "数量表达（Сколько...?）",
+    "u7_f1_seq": "喜好表达（Я люблю...）",
+    "u8_f1_seq": "必须表达（Я должен...）",
+    "u9_f1_seq": "过去时（Я сделал...）",
+    "u10_f1_seq": "将来时（Завтра я буду...）",
+    "u11_f1_seq": "宾语从句（Я знаю, что...）",
+    "u12_f1_seq": "综合句型1（自我介绍+地点）",
+    "u12_f2_seq": "综合句型2（喜好+必须）",
+}
+
+
+def _quest_get_course_packs():
+    """API1：所有课程包列表"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_course_packs ORDER BY `order` ASC, created_at ASC")
+            packs = cur.fetchall()
+            cur.execute("SELECT course_pack_id, COUNT(*) AS cnt FROM quest_courses GROUP BY course_pack_id")
+            unit_counts = {r["course_pack_id"]: r["cnt"] for r in cur.fetchall()}
+        result = []
+        for p in packs:
+            result.append({
+                "id": p["id"],
+                "title": p.get("title") or "",
+                "description": p.get("description") or "",
+                "cover_url": p.get("cover_url") or "",
+                "level": p.get("level") or "",
+                "author": p.get("author") or "",
+                "lesson_count": p.get("lesson_count") or unit_counts.get(p["id"], 0),
+                "learner_count": p.get("learner_count") or 0,
+                "tag": p.get("tag") or "",
+                "category": p.get("category") or "",
+                "unit_count": unit_counts.get(p["id"], 0),
+            })
+        return result
+    finally:
+        conn.close()
+
+
+def _quest_unit_status(records):
+    """根据学习记录判定单元状态：已完成 / 进行中 / 未开始"""
+    if not records:
+        return "未开始"
+    for r in records:
+        if (r.get("completion_time") or 0) > 0:
+            return "已完成"
+    for r in records:
+        if (r.get("total_count") or 0) > 0 or (r.get("correct_count") or 0) > 0:
+            return "进行中"
+    return "未开始"
+
+
+def _quest_get_pack_units(pack_id, user_id=None):
+    """API2：某课程包的全部单元 + 学习进度（可选 user_id）"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_course_packs WHERE id=%s", (pack_id,))
+            pack = cur.fetchone()
+            if not pack:
+                return None
+            cur.execute("SELECT * FROM quest_courses WHERE course_pack_id=%s ORDER BY `order` ASC", (pack_id,))
+            units = cur.fetchall()
+            unit_ids = [u["id"] for u in units]
+            rec_map = {}
+            if unit_ids:
+                ph = ", ".join(["%s"] * len(unit_ids))
+                if user_id:
+                    cur.execute(
+                        f"SELECT course_id, completion_time, correct_count, total_count, max_combo, rating "
+                        f"FROM quest_learning_records WHERE user_id=%s AND course_id IN ({ph})",
+                        [user_id] + unit_ids)
+                else:
+                    cur.execute(
+                        f"SELECT course_id, completion_time, correct_count, total_count, max_combo, rating "
+                        f"FROM quest_learning_records WHERE course_id IN ({ph})", unit_ids)
+                for r in cur.fetchall():
+                    rec_map.setdefault(r["course_id"], []).append(r)
+        pack_info = {
+            "id": pack["id"], "title": pack.get("title") or "",
+            "description": pack.get("description") or "",
+            "cover_url": pack.get("cover_url") or "", "level": pack.get("level") or "",
+            "author": pack.get("author") or "", "tag": pack.get("tag") or "",
+            "learner_count": pack.get("learner_count") or 0,
+        }
+        unit_list = []
+        for u in units:
+            unit_list.append({
+                "id": u["id"], "title": u.get("title") or "",
+                "subtitle": u.get("subtitle") or "",
+                "difficulty": u.get("difficulty") or "",
+                "step_count": u.get("step_count") or 0,
+                "family_count": u.get("family_count") or 0,
+                "order": u.get("order") or 0,
+                "cover_url": u.get("cover_url") or "",
+                "status": _quest_unit_status(rec_map.get(u["id"])),
+            })
+        return {"pack": pack_info, "units": unit_list}
+    finally:
+        conn.close()
+
+
+def _quest_get_unit_build_steps(unit_id):
+    """API3：某单元下全部家族的渐进构建步骤（按 sequence_id 分组，含 words JSON）"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            cur.execute("SELECT * FROM quest_courses WHERE id=%s", (unit_id,))
+            unit = cur.fetchone()
+            if not unit:
+                return None
+            cur.execute("SELECT * FROM quest_build_steps WHERE unit_id=%s ORDER BY sequence_id, step_order", (unit_id,))
+            steps = cur.fetchall()
+        fam_dict = {}
+        fam_order = []
+        fam_meta = {}
+        for s in steps:
+            sid = s["sequence_id"]
+            if sid not in fam_dict:
+                fam_dict[sid] = []
+                fam_order.append(sid)
+            if sid not in fam_meta and s.get("full_sentence"):
+                fam_meta[sid] = (s.get("full_sentence") or "", s.get("full_chinese") or "")
+            words = s.get("words")
+            if isinstance(words, str):
+                try:
+                    words = json.loads(words)
+                except Exception:
+                    words = []
+            elif words is None:
+                words = []
+            fam_dict[sid].append({
+                "step_order": s.get("step_order") or 0,
+                "target_sentence": s.get("target_sentence") or "",
+                "chinese": s.get("chinese") or "",
+                "action": s.get("action") or "",
+                "grammar_note": s.get("grammar_note") or "",
+                "new_element": s.get("new_element") or "",
+                "is_complete": bool(s.get("is_complete")),
+                "words": words,
+            })
+        families = []
+        for sid in fam_order:
+            full_sentence, full_chinese = fam_meta.get(sid, ("", ""))
+            families.append({
+                "sequence_id": sid,
+                "family_name": _QUEST_FAMILY_NAMES.get(sid, ""),
+                "full_sentence": full_sentence,
+                "full_chinese": full_chinese,
+                "step_count": len(fam_dict[sid]),
+                "steps": fam_dict[sid],
+            })
+        return {
+            "unit": {
+                "id": unit["id"], "title": unit.get("title") or "",
+                "subtitle": unit.get("subtitle") or "",
+                "difficulty": unit.get("difficulty") or "",
+                "family_count": unit.get("family_count") or 0,
+                "step_count": unit.get("step_count") or 0,
+            },
+            "families": families,
+        }
+    finally:
+        conn.close()
+
+
 def _quest_get_course_with_statements(course_id):
     conn = _quest_conn()
     try:
@@ -2321,6 +2508,49 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "data": data})
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
+
+        # 课程包列表（句型家族渐进构建，数据驱动）
+        if path == "/api/course-packs":
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            try:
+                return self._json(200, {"ok": True, "data": _quest_get_course_packs()})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+
+        # 某课程包的单元列表 + 学习进度（可选 ?user_id=）
+        if path.startswith("/api/course-packs/") and path.endswith("/units"):
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            _parts = path.strip("/").split("/")
+            if len(_parts) == 4 and _parts[1] == "course-packs" and _parts[3] == "units":
+                _pack_id = urllib.parse.unquote(_parts[2])
+                _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                _user_id = (_q.get("user_id", [""])[0] or "").strip() or None
+                try:
+                    _data = _quest_get_pack_units(_pack_id, _user_id)
+                    if _data is None:
+                        return self._json(404, {"ok": False, "error": "课程包不存在: " + _pack_id})
+                    return self._json(200, {"ok": True, "data": _data})
+                except Exception as e:
+                    return self._json(500, {"ok": False, "error": str(e)})
+            return self._json(400, {"ok": False, "error": "路径格式应为 /api/course-packs/<packId>/units"})
+
+        # 某单元的渐进构建步骤（按家族分组）
+        if path.startswith("/api/units/") and path.endswith("/build-steps"):
+            if not (_PYMYSQL_OK and DATABASE_URL):
+                return self._json(500, {"ok": False, "error": "未配置数据库（DATABASE_URL）"})
+            _parts = path.strip("/").split("/")
+            if len(_parts) == 4 and _parts[1] == "units" and _parts[3] == "build-steps":
+                _unit_id = urllib.parse.unquote(_parts[2])
+                try:
+                    _data = _quest_get_unit_build_steps(_unit_id)
+                    if _data is None:
+                        return self._json(404, {"ok": False, "error": "单元不存在: " + _unit_id})
+                    return self._json(200, {"ok": True, "data": _data})
+                except Exception as e:
+                    return self._json(500, {"ok": False, "error": str(e)})
+            return self._json(400, {"ok": False, "error": "路径格式应为 /api/units/<unitId>/build-steps"})
 
         # 优先服务 React 构建产物（dist/）；未构建时回退到 legacy.html
         serve_dir = DIST_DIR if os.path.isfile(os.path.join(DIST_DIR, "index.html")) else BASE_DIR
