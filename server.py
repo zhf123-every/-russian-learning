@@ -1714,26 +1714,55 @@ def _quest_get_course_build_steps(course_id):
                 units = []
                 for step in sorted(seq_steps, key=lambda s: s.get("step_order") or 1):
                     target = step["target_sentence"]
-                    # 完整句步骤直接用完整句的words
-                    if step.get("is_complete", 0) or step == complete_step:
-                        step_words = [{
-                            "order": w["order"],
-                            "lemma": w.get("lemma", ""),
-                            "form": w.get("form", ""),
-                            "pos": w.get("pos", ""),
-                            "grammaticalCase": w.get("grammatical_case", ""),
-                            "number": w.get("number", ""),
-                            "gender": w.get("gender", ""),
-                            "person": w.get("person"),
-                            "tense": w.get("tense", ""),
-                            "aspect": w.get("aspect", ""),
-                            "stressPosition": w.get("stress_position", -1),
-                            "syntacticRole": w.get("syntactic_role", ""),
-                            "isFixedPosition": bool(w.get("is_fixed_position", False)),
-                            "chunkType": w.get("chunk_type", "single_word"),
-                        } for w in full_words]
-                    else:
-                        step_words = _match_words(target, full_words)
+                    # 优先用build_steps表自带的words字段（JSON）
+                    step_words = None
+                    if step.get("words"):
+                        try:
+                            import json as _json
+                            raw_words = _json.loads(step["words"])
+                            normalized = []
+                            for i, w in enumerate(raw_words):
+                                normalized.append({
+                                    "order": w.get("order", i),
+                                    "lemma": w.get("lemma", ""),
+                                    "form": w.get("form", ""),
+                                    "pos": w.get("pos", ""),
+                                    "grammaticalCase": w.get("grammaticalCase", w.get("grammatical_case", "")),
+                                    "number": w.get("number", ""),
+                                    "gender": w.get("gender", ""),
+                                    "person": w.get("person"),
+                                    "tense": w.get("tense", ""),
+                                    "aspect": w.get("aspect", ""),
+                                    "stressPosition": w.get("stressPosition", w.get("stress_position", -1)),
+                                    "syntacticRole": w.get("syntacticRole", w.get("syntactic_role", "")),
+                                    "isFixedPosition": bool(w.get("isFixedPosition", w.get("is_fixed_position", False))),
+                                    "chunkType": w.get("chunkType", w.get("chunk_type", "single_word")),
+                                })
+                            step_words = normalized
+                        except:
+                            step_words = None
+                    # 没有自带words，走原来的匹配逻辑
+                    if step_words is None:
+                        # 完整句步骤直接用完整句的words
+                        if step.get("is_complete", 0) or step == complete_step:
+                            step_words = [{
+                                "order": w["order"],
+                                "lemma": w.get("lemma", ""),
+                                "form": w.get("form", ""),
+                                "pos": w.get("pos", ""),
+                                "grammaticalCase": w.get("grammatical_case", ""),
+                                "number": w.get("number", ""),
+                                "gender": w.get("gender", ""),
+                                "person": w.get("person"),
+                                "tense": w.get("tense", ""),
+                                "aspect": w.get("aspect", ""),
+                                "stressPosition": w.get("stress_position", -1),
+                                "syntacticRole": w.get("syntactic_role", ""),
+                                "isFixedPosition": bool(w.get("is_fixed_position", False)),
+                                "chunkType": w.get("chunk_type", "single_word"),
+                            } for w in full_words]
+                        else:
+                            step_words = _match_words(target, full_words)
                     units.append({
                         "id": step["id"],
                         "stepOrder": step["step_order"],
