@@ -4,3 +4,4 @@ pymysql
 vosk
 edge-tts
 av
+boto3

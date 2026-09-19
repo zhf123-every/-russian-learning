@@ -111,6 +111,103 @@ def _get_minio_client():
             if endpoint and access_key and secret_key:
                 _minio_client = Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=True)
     return _minio_client
+# ---- Backblaze B2（S3 兼容）对象存储：浏览器预签名直传，文件不经过本服务 ----
+# 采用私有桶（免信用卡、10GB 免费）+ 预签名 URL：
+#   上传：前端拿 presigned PUT 直传 B2；播放：读取时把 b2://key 换成 presigned GET。
+try:
+    import boto3
+    from botocore.config import Config as _BotoConfig
+    _B2_OK = True
+except Exception:
+    _B2_OK = False
+
+_B2_BUCKET = os.environ.get("B2_BUCKET", "")
+_B2_REGION = os.environ.get("B2_REGION", "")
+_B2_ENDPOINT = os.environ.get("B2_ENDPOINT", "")
+_B2_KEYID = os.environ.get("B2_KEYID", "")
+_B2_APPKEY = os.environ.get("B2_APPLICATION_KEY", "")
+_B2_PREFIX = "b2://"
+
+_b2_client = None
+def _get_b2():
+    global _b2_client
+    if not _B2_OK:
+        return None
+    if _b2_client is None:
+        if not (_B2_BUCKET and _B2_ENDPOINT and _B2_KEYID and _B2_APPKEY):
+            return None
+        endpoint = _B2_ENDPOINT if _B2_ENDPOINT.startswith("http") else "https://" + _B2_ENDPOINT
+        _b2_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=_B2_KEYID,
+            aws_secret_access_key=_B2_APPKEY,
+            region_name=(_B2_REGION or None),
+            config=_BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                retries={"max_attempts": 3},
+            ),
+        )
+    return _b2_client
+
+
+def _b2_configured():
+    return _get_b2() is not None
+
+
+def _b2_safe_ext(filename, default=".mp4"):
+    m = re.search(r"\.([A-Za-z0-9]{1,5})$", filename or "")
+    ext = ("." + m.group(1).lower()) if m else default
+    if ext not in (".mp4", ".webm", ".mov", ".m4v", ".mkv",
+                   ".jpg", ".jpeg", ".png", ".webp"):
+        return default
+    return ext
+
+
+def _b2_content_type(ext, default="video/mp4"):
+    table = {
+        ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+        ".mov": "video/quicktime", ".mkv": "video/x-matroska",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+    }
+    return table.get(ext, default)
+
+
+def _b2_presign_put(key, content_type, expires=600):
+    client = _get_b2()
+    if not client:
+        return None
+    params = {"Bucket": _B2_BUCKET, "Key": key}
+    if content_type:
+        params["ContentType"] = content_type
+    return client.generate_presigned_url("put_object", Params=params, ExpiresIn=expires)
+
+
+def _b2_presign_get(key, expires=604800):
+    client = _get_b2()
+    if not client:
+        return None
+    return client.generate_presigned_url(
+        "get_object", Params={"Bucket": _B2_BUCKET, "Key": key}, ExpiresIn=expires
+    )
+
+
+def _b2_resolve(url):
+    """把 b2://key 换成预签名播放链接；http(s) 外链原样返回；失败返回空串。"""
+    if not url:
+        return ""
+    if url.startswith(_B2_PREFIX):
+        key = url[len(_B2_PREFIX):]
+        try:
+            return _b2_presign_get(key) or ""
+        except Exception as e:
+            print("[b2] sign failed:", e)
+            return ""
+    return url
+
+
 def _normalize_db_url(url):
     """修正 Render 注入的 DATABASE_URL 的两个问题。
 
@@ -1263,11 +1360,11 @@ def _square_row_to_item(row):
         "title": row["title"],
         "category": row["category"],
         "level": row["level"],
-        "videoUrl": row["video_url"] or "",
+        "videoUrl": _b2_resolve(row["video_url"] or ""),
         "description": row["description"] or "",
         "author": row["author"] or "",
-        "thumbnail": row["thumbnail"] or "",
-        "posterUrl": row["poster_url"] or "",
+        "thumbnail": _b2_resolve(row["thumbnail"] or ""),
+        "posterUrl": _b2_resolve(row["poster_url"] or ""),
         "views": row["views"] or 0,
         "tags": json.loads(row["tags"] or "[]"),
         "sentences": json.loads(row["sentences"] or "[]"),
@@ -2392,6 +2489,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
         ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
         return self._json(200, {"ok": ok})
+
+    def _handle_upload_presign(self, data):
+        """为浏览器直传 B2 签发临时 PUT 授权（本服务不接收文件本体）。"""
+        err = self._check_admin(data)
+        if err:
+            return err
+        if not _b2_configured():
+            return self._json(500, {"ok": False, "error": "B2 未配置（需设置 B2_KEYID/B2_APPLICATION_KEY/B2_BUCKET/B2_REGION/B2_ENDPOINT）"})
+        import uuid
+        filename = (data.get("filename") or "").strip()
+        kind = (data.get("kind") or "video").strip()
+        if not filename:
+            return self._json(400, {"ok": False, "error": "缺少 filename"})
+        is_image = kind == "image"
+        ext = _b2_safe_ext(filename, ".jpg" if is_image else ".mp4")
+        ctype = (data.get("contentType") or "").strip() or _b2_content_type(
+            ext, "image/jpeg" if is_image else "video/mp4")
+        subdir = "thumbs" if is_image else "videos"
+        key = "%s/%s%s" % (subdir, uuid.uuid4().hex, ext)
+        try:
+            put_url = _b2_presign_put(key, ctype, expires=600)
+            get_url = _b2_presign_get(key, expires=604800)
+            if not put_url:
+                return self._json(500, {"ok": False, "error": "生成上传授权失败"})
+            return self._json(200, {
+                "ok": True,
+                "key": key,
+                "objectUrl": _B2_PREFIX + key,
+                "uploadUrl": put_url,
+                "getUrl": get_url,
+                "contentType": ctype,
+                "expiresIn": 600,
+            })
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "生成上传授权失败：" + str(e)})
 
     def _handle_upload(self, data):
         """直接上传文件（视频/缩略图）到 MinIO，返回公开 URL"""
@@ -3691,6 +3823,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_sentence_analysis(data)
             if path == "/api/pronunciation-score":
                 return self._handle_pronunciation_score(data)
+            if path == "/api/upload/presign":
+                return self._handle_upload_presign(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             if path == "/api/generate-quiz":
