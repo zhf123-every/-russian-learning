@@ -2261,6 +2261,11 @@ class Handler(BaseHTTPRequestHandler):
         url = (data.get("url") or "").strip()
         if not url:
             return self._json(400, {"ok": False, "error": "缺少视频链接"})
+        # B2 素材：b2://key → 预签名播放 URL（后端直接下载转写，不经过本服务存储）
+        if url.startswith(_B2_PREFIX):
+            url = _b2_resolve(url)
+            if not url:
+                return self._json(200, {"ok": False, "error": "B2 视频解析失败，请确认素材已上传到云端"})
         audio_path, err = download_audio(url)
         if err:
             return self._json(200, {"ok": False, "error": err})
