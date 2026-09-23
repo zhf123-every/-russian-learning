@@ -2530,6 +2530,47 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "error": "生成上传授权失败：" + str(e)})
 
+    def _handle_videos_sync(self, data):
+        """投稿名单写入 B2（videos/index.json）。所有访客通过 GET /api/videos/list 读到。"""
+        err = self._check_admin(data)
+        if err:
+            return err
+        if not _b2_configured():
+            return self._json(500, {"ok": False, "error": "B2 未配置"})
+        videos = data.get("videos")
+        if not isinstance(videos, list):
+            return self._json(400, {"ok": False, "error": "videos 必须是数组"})
+        try:
+            client = _get_b2()
+            body = json.dumps(videos, ensure_ascii=False).encode("utf-8")
+            client.put_object(
+                Bucket=_B2_BUCKET, Key="videos/index.json",
+                Body=io.BytesIO(body), ContentType="application/json",
+            )
+            return self._json(200, {"ok": True, "count": len(videos)})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "名单同步失败：" + str(e)})
+
+    def _handle_videos_list(self):
+        """读取 B2 上的投稿名单（无需密钥，所有访客可读）。"""
+        if not _b2_configured():
+            return self._json(200, {"ok": True, "videos": []})
+        try:
+            client = _get_b2()
+            obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
+            raw = obj["Body"].read().decode("utf-8")
+            videos = json.loads(raw)
+            if not isinstance(videos, list):
+                videos = []
+            for v in videos:
+                if isinstance(v, dict) and v.get("videoUrl"):
+                    v["videoUrl"] = _b2_resolve(v["videoUrl"])
+                if isinstance(v, dict) and v.get("thumbnail") and v["thumbnail"].startswith(_B2_PREFIX):
+                    v["thumbnail"] = _b2_resolve(v["thumbnail"])
+            return self._json(200, {"ok": True, "videos": videos})
+        except Exception as e:
+            return self._json(200, {"ok": True, "videos": [], "error": str(e)})
+
     def _handle_upload(self, data):
         """直接上传文件（视频/缩略图）到 MinIO，返回公开 URL"""
         err = self._check_admin(data)
@@ -2589,6 +2630,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_stream()
         if path == "/api/square/list":
             return self._handle_square_list()
+        if path == "/api/videos/list":
+            return self._handle_videos_list()
         if path == "/api/tts":
             # TTS文本转语音（GET，支持直接用audio标签播放；voice=female/male 切换男女声；rate=0.5~2.0 朗读速度）
             query = urllib.parse.urlparse(self.path).query
@@ -3830,6 +3873,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_pronunciation_score(data)
             if path == "/api/upload/presign":
                 return self._handle_upload_presign(data)
+            if path == "/api/videos/sync":
+                return self._handle_videos_sync(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             if path == "/api/generate-quiz":
