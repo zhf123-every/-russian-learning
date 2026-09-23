@@ -2632,6 +2632,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_square_list()
         if path == "/api/videos/list":
             return self._handle_videos_list()
+        if path == "/api/videos/resolve":
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            url = (params.get("url", [""])[0] or "").strip()
+            return self._json(200, {"ok": True, "url": _b2_resolve(url)})
         if path == "/api/tts":
             # TTS文本转语音（GET，支持直接用audio标签播放；voice=female/male 切换男女声；rate=0.5~2.0 朗读速度）
             query = urllib.parse.urlparse(self.path).query
