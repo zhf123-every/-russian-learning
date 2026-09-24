@@ -2316,7 +2316,7 @@ class Handler(BaseHTTPRequestHandler):
             "再组合多个生词，再带疑问/否定/复合结构）；后面的句子尽量复用前面出现过的生词，滚动巩固。\n"
             "3. 句子必须真实、自然、符合俄语语法与常见使用场景，不要生硬直译。\n"
             "4. 每句只放俄语原句与中文翻译。\n"
-            "5. 句子数量：生词少于 5 个 → 每词 1 句（共 5-10 句）；5-10 个词 → 共 10-15 句；超过 10 个词 → 共 15-20 句。"
+            "5. 句子数量（重要）：生词表中的每一个单词至少配 1 句例句，核心常用词可配 2 句；总句数下限 = 生词数 × 1.2，上限 120 句。例如：生词 46 个 → 生成约 55-90 句；生词 10 个 → 生成约 12-20 句。必须保证生词表中的每一个单词都出现在至少一个句子里。"
         )
         messages = [
             {"role": "system", "content": "你是俄语课程内容生成专家，输出严格 JSON。"},
@@ -2330,14 +2330,54 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(200, {"ok": False, "error": "AI请求异常：" + str(e)})
 
+    def _rule_split_course(self, text):
+        """规则切分：按规范课标题行（Урок N / 第N课）+ 词表行直接切分，不依赖 AI。返回 lessons 或 None"""
+        import re as _re
+        lines = text.splitlines()
+        pat = _re.compile(r'^\s*(?:УРОК|Урок|урок)\s*\d+\s*[·.\-—]?\s*(.*)$|^\s*第\s*\d+\s*课\s*[·.\-—]?\s*(.*)$', _re.I)
+        idxs = [i for i, ln in enumerate(lines) if pat.match(ln.strip())]
+        if not idxs:
+            return None
+        lessons = []
+        for k, start in enumerate(idxs):
+            end = idxs[k + 1] if k + 1 < len(idxs) else len(lines)
+            block = lines[start:end]
+            head = block[0].strip()
+            m = _re.match(r'^\s*(?:УРОК|Урок|урок)\s*\d+\s*[·.\-—]?\s*(.*)$', head, _re.I)
+            if not m:
+                m = _re.match(r'^\s*第\s*\d+\s*课\s*[·.\-—]?\s*(.*)$', head)
+            theme = (m.group(1).strip() if m else head)[:40] or ("第 %d 课" % (k + 1))
+            vocab = []
+            for ln in block[1:]:
+                ln = ln.strip()
+                if not ln or ln.startswith('#'):
+                    continue
+                if _re.match(r'^[А-Яа-яЁёA-Za-z][А-Яа-яЁёA-Za-z\-\' ]{0,40}\s*[|｜]\s*\S+', ln):
+                    vocab.append(ln)
+            lessons.append({
+                "num": k + 1,
+                "name": head[:40],
+                "desc": theme,
+                "vocab": "\n".join(vocab),
+            })
+        return lessons
+
     def _handle_course_split(self, data):
-        """自动切课：整本书/多课连续文本 → AI 按课标题切分，输出每课（课名/简介/生词表原始行）"""
+        """自动切课：优先规则切分（规范 Урок N 标题行直接切），规则不适用再 AI 智能识别课边界"""
         title = (data.get("title") or "").strip() or "俄语课程"
         category = (data.get("category") or "").strip() or "基础俄语"
         level = (data.get("level") or "").strip() or "A1"
         text = (data.get("text") or "").strip()
         if not text:
             return self._json(200, {"ok": False, "error": "缺少文本（请粘贴整本书或连续多课的文本）"})
+        # 1) 规则切分：格式规范的批次文本直接按「Урок N」标题行切，秒回、100% 准、不依赖 AI
+        try:
+            lessons = self._rule_split_course(text)
+        except Exception:
+            lessons = None
+        if lessons:
+            return self._json(200, {"ok": True, "content": json.dumps({"lessons": lessons}, ensure_ascii=False)})
+        # 2) AI 兜底：无规范标题（用户贴 OCR 整书）时智能识别
         truncated = len(text) > 20000
         if truncated:
             text = text[:20000]
