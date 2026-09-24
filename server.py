@@ -3406,7 +3406,7 @@ class Handler(BaseHTTPRequestHandler):
 输出格式：
 {
   "words": [
-    {"word": "句中出现的俄语原词", "stressed": "带重音的同形（在重音元音后面加组合重音符号 ́，例如 приве́т；单音节词也要标）", "pos": "词性中文，如 名词/动词/代词/形容词/副词/前置词/连接词/数词/语气词", "mean": "该词在本句中的中文词义"}
+    {"word": "句中出现的俄语原词", "stressed": "带重音的同形（在重音元音后面加组合重音符号 ́，例如 приве́т；单音节词也要标）", "pos": "词性中文，如 名词/动词/代词/形容词/副词/前置词/连接词/数词/语气词", "mean": "该词在本句中的中文词义", "gender": "名词/代词/形容词的性（阳性/阴性/中性，动词/副词等无性写 无）", "grammar_case": "名词/代词/形容词的格（第一格/第二格/第三格/第四格/第五格/第六格，动词/副词等无格写 无）", "number": "数（单数/复数，不可数或不确定写 无）"}
   ],
   "components": [
     {"text": "与 words 一一对应的单个俄语单词（原文，顺序和数量必须与 words 完全一致，每项 text 只能是对应那个单词本身，不能是片段）", "role": "该单词在句中的中文语法角色（主语/谓语/宾语/定语/状语/呼语/系词/连接词/虚词等，一个单词一个标注，不能合并成片段）"}
@@ -3453,6 +3453,9 @@ class Handler(BaseHTTPRequestHandler):
                     "stressed": str(w.get("stressed", "") or wv).strip(),
                     "pos": str(w.get("pos", "") or "").strip(),
                     "mean": str(w.get("mean", "") or "").strip(),
+                    "gender": str(w.get("gender", "") or "").strip(),
+                    "grammar_case": str(w.get("grammar_case", "") or "").strip(),
+                    "number": str(w.get("number", "") or "").strip(),
                 })
             components = []
             for c in (parsed.get("components", []) if isinstance(parsed, dict) else []):
