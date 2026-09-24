@@ -2264,6 +2264,21 @@ OCR文本：{{text}}
 - 如果完全靠猜（情况C），置信度必须低于 0.5。
 """
 
+COURSE_SPLIT_SYSTEM_PROMPT = """你是一个专业的俄语教材结构切分专家。用户会给你俄语教材（如《走遍俄罗斯》）的连续文本（可能是 OCR 结果，可能包含多课内容），你需要准确找出每一课的起始位置，把文本切成若干课。
+
+切分规则（核心）：
+1. 以明确的课程标题作为一课的开始，例如「Урок 1」「УРОК 2」「Урок 3 · 这是谁」「第4课」「第一课」等。课号按在文本中出现的顺序编号（1, 2, 3...），不要假设编号连续（教材中可能有复习课，按出现顺序编号即可）。
+2. 一课从它的标题行开始，到下一课标题行之前结束（最后一课到文本结尾）。
+3. 一课内部的内容（生词表、课文、例句等）不要拆分到其他课。
+4. 如果整个文本中找不到任何可识别的课标题，则把整段文本视为 1 课。
+5. 每课输出三个字段：
+   - name：课名，保留教材标题原文，如「Урок 1 · 字母与问候」
+   - desc：一句话中文简介（该课主题，如「字母与问候」）
+   - vocab：该课包含的生词表原始行，逐行原样输出（格式为「词 | 释义」，一行一个词；若该课没有生词表行，则输出空字符串）
+
+输出要求：严格只输出 JSON，格式为 {"lessons": [{"num": 1, "name": "...", "desc": "...", "vocab": "..."}, ...]}，不要输出任何其他文字。
+"""
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         ao = _allowed_origin(self.headers.get("Origin") or "")
@@ -2305,6 +2320,32 @@ class Handler(BaseHTTPRequestHandler):
         )
         messages = [
             {"role": "system", "content": "你是俄语课程内容生成专家，输出严格 JSON。"},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            return self._json(200, {"ok": True, "content": content})
+        except RuntimeError as e:
+            return self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "AI请求异常：" + str(e)})
+
+    def _handle_course_split(self, data):
+        """自动切课：整本书/多课连续文本 → AI 按课标题切分，输出每课（课名/简介/生词表原始行）"""
+        title = (data.get("title") or "").strip() or "俄语课程"
+        category = (data.get("category") or "").strip() or "基础俄语"
+        level = (data.get("level") or "").strip() or "A1"
+        text = (data.get("text") or "").strip()
+        if not text:
+            return self._json(200, {"ok": False, "error": "缺少文本（请粘贴整本书或连续多课的文本）"})
+        truncated = len(text) > 12000
+        if truncated:
+            text = text[:12000]
+        prompt = COURSE_SPLIT_SYSTEM_PROMPT + "\n\n待切分文本（课程标题：" + title + "，主分类：" + category + "，难度：" + level + "）：\n" + text
+        if truncated:
+            prompt += "\n\n[注意：文本过长已截断，仅切分以上可见部分，其余课请分批粘贴]"
+        messages = [
+            {"role": "system", "content": "你是俄语教材结构切分专家，输出严格 JSON。"},
             {"role": "user", "content": prompt},
         ]
         try:
@@ -3994,6 +4035,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_generate_quiz(data)
             if path == "/api/grade-quiz":
                 return self._handle_grade_quiz(data)
+            if path == "/api/course-split":
+                return self._handle_course_split(data)
             if path == "/api/course-tag":
                 return self._handle_course_tag(data)
             if path == "/api/course-lesson-gen":
