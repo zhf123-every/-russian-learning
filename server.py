@@ -2338,9 +2338,9 @@ class Handler(BaseHTTPRequestHandler):
         text = (data.get("text") or "").strip()
         if not text:
             return self._json(200, {"ok": False, "error": "缺少文本（请粘贴整本书或连续多课的文本）"})
-        truncated = len(text) > 12000
+        truncated = len(text) > 20000
         if truncated:
-            text = text[:12000]
+            text = text[:20000]
         prompt = COURSE_SPLIT_SYSTEM_PROMPT + "\n\n待切分文本（课程标题：" + title + "，主分类：" + category + "，难度：" + level + "）：\n" + text
         if truncated:
             prompt += "\n\n[注意：文本过长已截断，仅切分以上可见部分，其余课请分批粘贴]"
