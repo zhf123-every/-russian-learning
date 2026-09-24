@@ -2217,6 +2217,53 @@ def _square_delete(item_id):
         conn.close()
 
 
+COURSE_TAG_SYSTEM_PROMPT = """你是一个专业的中国俄语教育分类专家。你需要根据用户提供的【一级分类】和【OCR文本】，输出该内容对应的【年级】和【教材版本】。
+
+输入变量：
+一级分类：{{category}}
+OCR文本：{{text}}
+
+可选选项（必须严格从下列选项中选择，不可编造）：
+【年级选项】：[全部, 一年级, 二年级, 三年级, 四年级, 五年级, 六年级, 七年级, 八年级, 九年级, 高中, 通用]
+【版本选项】：[全部, 走遍俄罗斯, 大学俄语, 东方俄语, 新概念俄语, 黑大俄语, 北外俄语, 人教版初中, 人教版高中, 自编课等等]
+
+判断规则：
+
+二级标签（subcat）判断规则：
+根据【一级分类】从下列对应标签池中选出最匹配的一个（不要超出该池；仅教材同步允许按文本中出现的新教材名生成新版本标签）：
+- 教材同步 → 版本池：[走遍俄罗斯, 大学俄语, 东方俄语, 新概念俄语, 黑大俄语, 北外俄语, 人教版初中, 人教版高中, 自编课]（文本出现其他教材名时，允许生成该教材名作为标签）
+- 考试备考 → [中高考, 专四专八, 考研, ТРКИ等级, 留学预科, CATTI, 职业俄语]
+- 少儿俄语 → [少儿启蒙, 动画分级, 分级阅读, 动画绘本, 儿歌童谣, 字母拼读, 少儿词汇]
+- 基础俄语 → [零基础路线, 字母发音, 基础语法, 基础词汇, 核心句型, 经典教材, 综合提升]
+- 场景俄语 → [日常对话, 商务职场, 外贸商务, 旅游出行, 面试校园, 社交口语, 写作邮件]
+- 阅读听力 → [短文精读, 俄语故事, 名著简写, 新闻短文, 文化科普, 专业阅读]
+- 影视俄语 → [情景剧, 影视台词, 电影片段, 动画片段, 经典教材剧]
+- 音乐俄语 → [俄语歌曲]
+依据内容特征（标题关键词、词汇难度、语法点、题材）判断最合适的一项；内容特征不足以判断时填"全部"。该二级标签与年级判断独立，两者都要给出。
+
+版本匹配规则（优先执行）：
+- 仔细寻找文本中的教材名称（如"走遍俄罗斯"、"人教版"）、出版社名称（如"外研社"）或作者信息。
+- 如果文本特征符合外语教学与研究出版社的《走遍俄罗斯》，则填"走遍俄罗斯"。
+- 如果是国内义务教育阶段的教材，请根据学段匹配"人教版初中"或"人教版高中"。
+- 如果文本信息太少或明显是机构自编资料，填"自编课"。
+
+年级匹配规则（核心逻辑）：
+情况A：有明确年级字样。如果文本中直接出现了"X年级"、"初一"、"高一"等字眼，直接匹配对应的年级。
+情况B：无明确年级，根据内容进行推断（重点要求）。如果文本中没有明确出现年级，请根据提取的课程内容（词汇难度、语法知识点、课文主题）进行智能推断：
+- 如果是俄语字母发音（33个字母）、拼读儿歌、最基础的问候语（如Привет） → 根据内容进行智能推断标签。
+- 如果是基础语法（名词六格、动词第一/第二变位法）、校园日常对话、短篇故事 → 根据内容进行智能推断标签。
+- 如果是动词完成体/未完成体、复杂从句、高考真题、俄罗斯文化阅读 → 根据内容进行智能推断标签。
+- 如果是专业词汇（经贸、文学、翻译）、报刊选读、大学教材课文 → 根据内容进行智能推断标签。
+情况C：彻底无法推断。如果文本纯属毫无特征的通用对话或残缺文本，再将 grade 设为 "通用"。
+
+注意：如果一级分类是"考试备考"、"场景英语"等非年级绑定类别，请优先采用根据内容进行智能推断标签推断法。
+
+置信度控制：
+- 如果是有明确年级字样或版本名称（情况A），置信度请给 0.9 以上。
+- 如果是根据内容推断的（情况B），置信度必须在 0.5 到 0.8 之间，并说明推断依据。
+- 如果完全靠猜（情况C），置信度必须低于 0.5。
+"""
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         ao = _allowed_origin(self.headers.get("Origin") or "")
@@ -2225,6 +2272,67 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Content-Length, adminKey")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Vary", "Origin")
+
+    def _handle_course_lesson_gen(self, data):
+        """课程内容 AI 生成：生词表 → 一课（单词 + 渐进例句）。先学词、再渐进学句。"""
+        title = (data.get("title") or "").strip() or "俄语课"
+        category = (data.get("category") or "").strip() or "基础俄语"
+        level = (data.get("level") or "").strip() or "A1"
+        words_text = (data.get("words") or "").strip()
+        if not words_text:
+            return self._json(200, {"ok": False, "error": "缺少生词表（每行一个词，格式：词 | 释义）"})
+        prompt = (
+            "你是一个专业的俄语课程内容生成专家。用户提供一课的生词表，你需要为这一课生成完整学习内容，"
+            "用于\"先学单词、再按难度渐进学例句\"的教学法。\n\n"
+            "课程标题：" + title + "\n"
+            "主分类：" + category + "\n"
+            "难度：" + level + "\n"
+            "本课生词表（每行：词 | 释义）：\n" + words_text[:2000] + "\n\n"
+            "输出要求（严格只输出以下 JSON，不要任何其他文字）：\n"
+            "{\n"
+            '  "title": "课名，格式：第N课·主题，如：第1课·问候与初识",\n'
+            '  "description": "本课一句话简介",\n'
+            '  "words": [{"ru": "单词", "zh": "中文释义"}],\n'
+            '  "sentences": [{"ru": "俄语句子", "zh": "中文翻译"}]\n'
+            "}\n\n"
+            "句子生成规则（核心）：\n"
+            "1. 生词表中的每一个单词至少配 1 个例句（常用词可配 2 个）。\n"
+            "2. 例句必须渐进式排列：先短后长（先 2-4 词的最短句，再逐步加长）；先易后难（先只含 1 个生词的简单陈述句，"
+            "再组合多个生词，再带疑问/否定/复合结构）；后面的句子尽量复用前面出现过的生词，滚动巩固。\n"
+            "3. 句子必须真实、自然、符合俄语语法与常见使用场景，不要生硬直译。\n"
+            "4. 每句只放俄语原句与中文翻译。\n"
+            "5. 句子数量：生词少于 5 个 → 每词 1 句（共 5-10 句）；5-10 个词 → 共 10-15 句；超过 10 个词 → 共 15-20 句。"
+        )
+        messages = [
+            {"role": "system", "content": "你是俄语课程内容生成专家，输出严格 JSON。"},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            return self._json(200, {"ok": True, "content": content})
+        except RuntimeError as e:
+            return self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "AI请求异常：" + str(e)})
+
+    def _handle_course_tag(self, data):
+        """课程自动打标：根据一级分类 + OCR文本 → {年级, 教材版本, 置信度, 依据}"""
+        category = (data.get("category") or "").strip()
+        text = (data.get("text") or "").strip()
+        if not text:
+            return self._json(200, {"ok": False, "error": "缺少 OCR 文本"})
+        prompt = COURSE_TAG_SYSTEM_PROMPT.replace("{{category}}", category or "未知").replace("{{text}}", text[:2000])
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "请根据以上规则输出分类结果。严格只输出 JSON，格式为：grade(年级)、textbook(教材版本)、subcat(二级筛选标签)、confidence(0到1的置信度数字)、reason(一句话推断依据)。不要输出任何其他文字。"},
+        ]
+        try:
+            content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            return self._json(200, {"ok": True, "content": content})
+        except RuntimeError as e:
+            return self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            return self._json(200, {"ok": False, "error": "AI请求异常：" + str(e)})
 
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -3886,6 +3994,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_generate_quiz(data)
             if path == "/api/grade-quiz":
                 return self._handle_grade_quiz(data)
+            if path == "/api/course-tag":
+                return self._handle_course_tag(data)
+            if path == "/api/course-lesson-gen":
+                return self._handle_course_lesson_gen(data)
             return self._json(404, {"ok": False, "error": "未知接口"})
         except Exception as e:
             return self._json(500, {"ok": False, "error": str(e)})
