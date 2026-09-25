@@ -8,7 +8,10 @@
 """
 import json
 import os
-import pymysql
+try:
+    import pymysql
+except Exception:
+    pymysql = None  # 云端无 pymysql 时，内存词典（bkrs_dict.json）路径仍可用
 import re
 try:
     from natasha import MorphVocab
