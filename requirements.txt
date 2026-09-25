@@ -5,3 +5,4 @@ vosk
 edge-tts
 av
 boto3
+natasha
