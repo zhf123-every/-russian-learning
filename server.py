@@ -513,10 +513,32 @@ def _build_ffmpeg_cmd(payload, headers, ffmpeg="ffmpeg"):
             "-f", "mp4", "-"]
     return cmd
 
+# —— 本地 БКРС 词典链（translation_dict.py：A1修正→FreeDict→大БКРС→Natasha词形还原）——
+# natasha 缺失时原形查询仍可用；整体 import 失败则 _LOCAL_DICT_OK=False，不影响启动
+_LOCAL_DICT_OK = False
+_bkrs_translate_chunk = None
+try:
+    from translation_dict import translate_chunk as _bkrs_translate_chunk
+    _LOCAL_DICT_OK = True
+except Exception as _e:
+    print("[dict] БКРС本地词典不可用: %s" % _e)
+
 
 def dict_lookup(word):
-    """MyMemory 免费翻译接口（俄→中），无需 key。返回译文文本或 None。
-    MyMemory 对数据中心 IP 可能限流/失败，失败时用 AI 兜底翻译。"""
+    """俄→中翻译（三层）：
+    1. 本地 БКРС 词典链（A1修正 → 大БКРС 25万词条 → Natasha词形还原，translation_dict.py）
+    2. MyMemory 免费在线接口
+    3. AI 兜底翻译（已配置大模型时）
+    本地词典命中即返回；未命中（返回【词】占位）才走在线。"""
+    # —— 第一层：本地 БКРС 词典链 ——
+    if _LOCAL_DICT_OK:
+        try:
+            r = _bkrs_translate_chunk(word)
+            if r and r.strip() and not r.strip().startswith("【"):
+                return r.strip()
+        except Exception:
+            pass
+    # —— 第二层：MyMemory 免费翻译接口（俄→中），无需 key ——
     q = urllib.parse.quote(word)
     url = "https://api.mymemory.translated.net/get?q=%s&langpair=ru|zh-CN" % q
     status, body = http_call("GET", url, timeout=30)

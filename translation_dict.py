@@ -10,7 +10,10 @@ import json
 import os
 import pymysql
 import re
-from natasha import MorphVocab
+try:
+    from natasha import MorphVocab
+except Exception:
+    MorphVocab = None
 
 # 预加载БКРС词典到内存
 _BKRS_MEMORY_DICT = None
@@ -151,24 +154,29 @@ def _lookup_bkrs(word):
                 return None
     return None
 
-# 初始化词形还原器
-_morph_vocab = MorphVocab()
+# 初始化词形还原器（natasha 缺失时为 None，仅原形直查）
+_morph_vocab = MorphVocab() if MorphVocab else None
 
 def lemmatize_word(word):
     """用Natasha将词还原为原形（lemma）"""
     if not word:
         return ''
-    from natasha import Doc, Segmenter, NewsEmbedding, NewsMorphTagger
-    segmenter = Segmenter()
-    emb = NewsEmbedding()
-    morph_tagger = NewsMorphTagger(emb)
-    doc = Doc(word)
-    doc.segment(segmenter)
-    doc.tag_morph(morph_tagger)
-    for token in doc.tokens:
-        token.lemmatize(_morph_vocab)
-        if token.lemma:
-            return token.lemma
+    if MorphVocab is None or _morph_vocab is None:
+        return word.lower()
+    try:
+        from natasha import Doc, Segmenter, NewsEmbedding, NewsMorphTagger
+        segmenter = Segmenter()
+        emb = NewsEmbedding()
+        morph_tagger = NewsMorphTagger(emb)
+        doc = Doc(word)
+        doc.segment(segmenter)
+        doc.tag_morph(morph_tagger)
+        for token in doc.tokens:
+            token.lemmatize(_morph_vocab)
+            if token.lemma:
+                return token.lemma
+    except Exception:
+        pass
     return word.lower()
 
 # ========== A1常用词修正词典（手工curated） ==========
