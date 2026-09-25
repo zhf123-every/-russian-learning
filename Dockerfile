@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && 
 RUN curl -L --fail -o /tmp/vosk-model.zip https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
     python -c "import zipfile; zipfile.ZipFile('/tmp/vosk-model.zip').extractall('/app')" && \
     rm /tmp/vosk-model.zip
-COPY server.py answer_engine.py ./
+COPY server.py answer_engine.py translation_dict.py ./
+COPY bkrs_dict.json ./
 ENV PORT=8000 \
     NO_BROWSER=1 \
     VOSK_MODEL_PATH=/app/vosk-model-small-ru-0.22
