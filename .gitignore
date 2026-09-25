@@ -43,6 +43,7 @@ final_20_validation.py
 *.json
 !colloquial_examples.json
 !progressive_999sentences_result_v2.json
+!bkrs_dict.json
 *.txt
 *.zip
 *.tar.xz
