@@ -2875,6 +2875,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "error": "提交失败：" + str(e)})
 
+    def _handle_reviews_delete(self, data):
+        """POST /api/reviews/delete —— 管理员删除评价（adminKey 校验）。"""
+        err = self._check_admin(data)
+        if err:
+            return err
+        rid = str(data.get("id") or "").strip()
+        if not rid:
+            return self._json(400, {"ok": False, "error": "缺少评价 id"})
+        try:
+            with self._REVIEW_LOCK:
+                reviews = self._reviews_load_all()
+                before = len(reviews)
+                reviews = [r for r in reviews if str(r.get("id") or "") != rid]
+                if len(reviews) == before:
+                    return self._json(404, {"ok": False, "error": "评价不存在"})
+                if not self._reviews_save_all(reviews):
+                    return self._json(500, {"ok": False, "error": "存储失败"})
+            return self._json(200, {"ok": True, "deleted": rid})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "删除失败：" + str(e)})
+
     def _handle_upload(self, data):
         """直接上传文件（视频/缩略图）到 MinIO，返回公开 URL"""
         err = self._check_admin(data)
@@ -4191,6 +4212,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_videos_sync(data)
             if path == "/api/reviews/submit":
                 return self._handle_reviews_submit(data)
+            if path == "/api/reviews/delete":
+                return self._handle_reviews_delete(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             if path == "/api/generate-quiz":
