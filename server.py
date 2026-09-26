@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2782,6 +2783,98 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(200, {"ok": True, "videos": [], "error": str(e)})
 
+    # ---- 课程评价（B2 reviews/index.json，全网公开）----
+    _REVIEW_LOCK = threading.Lock()
+    _REVIEW_RATE = {}  # (courseId, ip) -> 上次提交时间，简易防刷
+
+    def _reviews_load_all(self):
+        """读取 B2 上的全部评价。"""
+        if not _b2_configured():
+            return []
+        try:
+            client = _get_b2()
+            obj = client.get_object(Bucket=_B2_BUCKET, Key="reviews/index.json")
+            raw = obj["Body"].read().decode("utf-8")
+            data = json.loads(raw)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _reviews_save_all(self, reviews):
+        """整体写回 B2。"""
+        if not _b2_configured():
+            return False
+        try:
+            client = _get_b2()
+            body = json.dumps(reviews, ensure_ascii=False).encode("utf-8")
+            client.put_object(
+                Bucket=_B2_BUCKET, Key="reviews/index.json",
+                Body=io.BytesIO(body), ContentType="application/json",
+            )
+            return True
+        except Exception:
+            return False
+
+    def _handle_reviews_list(self):
+        """GET /api/reviews/list?courseId=xxx —— 所有访客可读。"""
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        course_id = (params.get("courseId", [""])[0] or "").strip()
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 courseId"})
+        try:
+            reviews = self._reviews_load_all()
+            mine = [r for r in reviews if r.get("courseId") == course_id]
+            mine.sort(key=lambda r: r.get("time", 0), reverse=True)
+            return self._json(200, {"ok": True, "reviews": mine})
+        except Exception as e:
+            return self._json(200, {"ok": True, "reviews": [], "error": str(e)})
+
+    def _handle_reviews_submit(self, data):
+        """POST /api/reviews/submit —— 所有人可提交（不做管理员校验）。"""
+        course_id = str(data.get("courseId") or "").strip()
+        name = str(data.get("name") or "").strip()[:20] or "匿名"
+        text = str(data.get("text") or "").strip()
+        rating = data.get("rating")
+        try:
+            rating = int(rating)
+        except Exception:
+            rating = 0
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 courseId"})
+        if not text:
+            return self._json(400, {"ok": False, "error": "评价内容不能为空"})
+        if len(text) > 500:
+            return self._json(400, {"ok": False, "error": "评价最多 500 字"})
+        if rating < 1 or rating > 5:
+            return self._json(400, {"ok": False, "error": "评分需在 1-5 星之间"})
+        # 简易防刷：同一课程同一 IP 60 秒内限 1 条
+        ip = self.client_address[0] if self.client_address else "unknown"
+        key = (course_id, ip)
+        now = time.time()
+        with self._REVIEW_LOCK:
+            last = self._REVIEW_RATE.get(key, 0)
+            if now - last < 60:
+                return self._json(429, {"ok": False, "error": "提交太频繁，请稍后再试"})
+            self._REVIEW_RATE[key] = now
+        try:
+            with self._REVIEW_LOCK:
+                reviews = self._reviews_load_all()
+                reviews.append({
+                    "id": "r_" + str(int(now * 1000)),
+                    "courseId": course_id,
+                    "name": name,
+                    "rating": rating,
+                    "text": text,
+                    "time": int(now * 1000),
+                })
+                ok = self._reviews_save_all(reviews)
+            if not ok:
+                return self._json(500, {"ok": False, "error": "存储失败，请稍后重试"})
+            return self._json(200, {"ok": True, "id": "r_" + str(int(now * 1000))})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "提交失败：" + str(e)})
+
     def _handle_upload(self, data):
         """直接上传文件（视频/缩略图）到 MinIO，返回公开 URL"""
         err = self._check_admin(data)
@@ -2843,6 +2936,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_square_list()
         if path == "/api/videos/list":
             return self._handle_videos_list()
+        if path == "/api/reviews/list":
+            return self._handle_reviews_list()
         if path == "/api/videos/resolve":
             query = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(query)
@@ -4094,6 +4189,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_upload_presign(data)
             if path == "/api/videos/sync":
                 return self._handle_videos_sync(data)
+            if path == "/api/reviews/submit":
+                return self._handle_reviews_submit(data)
             if path == "/api/upload":
                 return self._handle_upload(data)
             if path == "/api/generate-quiz":
