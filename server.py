@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,6 +53,13 @@ if os.path.isfile(_env_path):
 # 连词成句判题引擎
 from answer_engine import AnswerEngine
 
+# P0 登录与 RBAC：密码哈希 / JWT 签发校验（纯函数库，见 auth_lib.py）
+from auth_lib import (
+    hash_password, verify_password, create_token, decode_token,
+    extract_bearer, validate_username, pyjwt_available,
+    BACKEND_ROLES, ADMIN_WRITE_ROLES,
+)
+
 PORT = int(os.environ.get("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, "dist")
@@ -70,6 +78,12 @@ CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN") or ""
 
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
+
+# ---- P0 登录与 RBAC ----
+# JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+# 令牌有效期（秒），默认 7 天
+TOKEN_TTL = int(os.environ.get("TOKEN_TTL", "604800"))
 
 # ---- CORS 白名单（拆分部署：前端在 Netlify，后端在 Render）----
 # 逗号分隔多个允许的前端域名（如 https://xxx.netlify.app,https://xxx.com）。
@@ -1477,6 +1491,133 @@ def _quest_init():
 
 
 # ==========================================================
+# P0 登录与 RBAC —— users / admin_operation_logs
+# ==========================================================
+
+def _auth_init():
+    """增量建表（幂等）：users 用户表 + admin_operation_logs 操作日志表。不改动任何旧表。"""
+    if not (_PYMYSQL_OK and DATABASE_URL):
+        return
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id VARCHAR(64) PRIMARY KEY,
+                        username VARCHAR(64) NOT NULL,
+                        password_hash VARCHAR(255) NOT NULL,
+                        role VARCHAR(16) NOT NULL DEFAULT 'learner',
+                        nickname VARCHAR(128),
+                        avatar VARCHAR(512),
+                        email VARCHAR(128),
+                        status TINYINT NOT NULL DEFAULT 1,
+                        created_at BIGINT DEFAULT 0,
+                        updated_at BIGINT DEFAULT 0,
+                        UNIQUE KEY uk_users_username (username)
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS admin_operation_logs (
+                        id VARCHAR(64) PRIMARY KEY,
+                        user_id VARCHAR(64),
+                        username VARCHAR(64),
+                        action VARCHAR(64) NOT NULL,
+                        target_type VARCHAR(64),
+                        target_id VARCHAR(64),
+                        detail TEXT,
+                        ip VARCHAR(64),
+                        created_at BIGINT DEFAULT 0
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_aol_created_at ON admin_operation_logs(created_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_aol_user_id ON admin_operation_logs(user_id)")
+            conn.commit()
+            print("[auth] 用户与操作日志表初始化完成")
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[auth] 初始化数据库失败：", e)
+
+
+def _auth_get_user_by_id(uid):
+    if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
+        return None
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                cur.execute(
+                    "SELECT id, username, password_hash, role, nickname, avatar, email, status, created_at "
+                    "FROM users WHERE id=%s", (uid,))
+                return cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[auth] 查询用户失败：", e)
+        return None
+
+
+def _auth_get_user_by_username(username):
+    if not (_PYMYSQL_OK and DATABASE_URL) or not username:
+        return None
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                cur.execute(
+                    "SELECT id, username, password_hash, role, nickname, avatar, email, status, created_at "
+                    "FROM users WHERE username=%s", (username,))
+                return cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[auth] 查询用户失败：", e)
+        return None
+
+
+def _auth_count_users():
+    if not (_PYMYSQL_OK and DATABASE_URL):
+        return 0
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM users")
+                row = cur.fetchone()
+                return int(row[0] if isinstance(row, tuple) else row["c"])
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[auth] 统计用户失败：", e)
+        return 0
+
+
+def _log_operation(user_id, username, action, target_type="", target_id="", detail=None, ip=""):
+    """写一条管理员操作日志（失败仅打印，不影响主流程）。"""
+    if not (_PYMYSQL_OK and DATABASE_URL):
+        return
+    try:
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO admin_operation_logs (id, user_id, username, action, target_type, target_id, detail, ip, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    ("log_" + uuid.uuid4().hex[:20], user_id or "", username or "",
+                     action, target_type or "", target_id or "",
+                     json.dumps(detail, ensure_ascii=False) if detail is not None else None,
+                     ip or "", int(time.time() * 1000)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print("[auth] 写操作日志失败：", e)
+
+
+
+# ==========================================================
 # Yandex SpeechKit TTS 语音合成
 # ==========================================================
 
@@ -2347,6 +2488,7 @@ class Handler(BaseHTTPRequestHandler):
         ]
         try:
             content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
+            self._log_op(data, "course_lesson_gen", "course", title, {"category": category, "level": level})
             return self._json(200, {"ok": True, "content": content})
         except RuntimeError as e:
             return self._json(200, {"ok": False, "error": str(e)})
@@ -2577,13 +2719,124 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    def _check_admin(self, data):
-        """校验请求携带的管理员密钥。返回 None 表示通过，否则返回错误响应。"""
-        if not ADMIN_KEY:
-            return self._json(500, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
-        if (data.get("adminKey") or "").strip() != ADMIN_KEY:
-            return self._json(403, {"ok": False, "error": "无权限：管理员密钥错误"})
+    def _auth_identity(self, data):
+        """解析当前请求身份。优先 Bearer JWT（或 body token），其次兼容旧 adminKey。
+        返回 dict(user) 或 None。"""
+        # 1) JWT 登录态
+        token = extract_bearer(self.headers, data)
+        if token:
+            payload = decode_token(SECRET_KEY, token)
+            if payload and payload.get("sub"):
+                row = _auth_get_user_by_id(payload.get("sub"))
+                if row and row.get("status") == 1:
+                    return row
+        # 2) 旧 adminKey 兼容（双轨过渡）
+        if ADMIN_KEY and data and (data.get("adminKey") or "").strip() == ADMIN_KEY:
+            return {"id": "", "username": "adminKey", "role": "admin", "nickname": ""}
         return None
+
+    def _require_backend(self, data):
+        """管理后台鉴权：返回 (user, None) 或 (None, 错误响应)。角色须在 admin/editor/viewer。"""
+        ident = self._auth_identity(data)
+        if ident and ident.get("role") in BACKEND_ROLES:
+            return ident, None
+        if not ADMIN_KEY and not ident:
+            return None, self._json(500, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
+        return None, self._json(403, {"ok": False, "error": "无权限：未登录或角色无权限"})
+
+    def _log_op(self, data, action, target_type="", target_id="", detail=None):
+        """便捷埋点：记录当前请求的操作日志（IP 取自连接）。"""
+        ident = self._auth_identity(data)
+        ip = self.client_address[0] if self.client_address else ""
+        _log_operation(
+            (ident or {}).get("id", ""),
+            (ident or {}).get("username", ""),
+            action, target_type, target_id, detail, ip,
+        )
+
+    def _check_admin(self, data):
+        """管理写操作校验（兼容过渡）：JWT(admin/editor/viewer) 或 adminKey 任一通过。
+        返回 None 表示通过，否则返回错误响应。"""
+        ident = self._auth_identity(data)
+        if ident and ident.get("role") in ADMIN_WRITE_ROLES:
+            return None
+        if not ADMIN_KEY and not ident:
+            return self._json(500, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
+        return self._json(403, {"ok": False, "error": "无权限：管理员密钥错误或未登录"})
+
+    # ---------- P0 认证接口 ----------
+
+    def _handle_auth_register(self, data):
+        """POST /api/auth/register —— 开放注册。首个注册账号自动成为 admin（引导建站），其余为 learner。"""
+        if not SECRET_KEY:
+            return self._json(500, {"ok": False, "error": "未配置 SECRET_KEY（请设置环境变量后重启）"})
+        if not pyjwt_available():
+            return self._json(500, {"ok": False, "error": "未安装 PyJWT（pip install PyJWT）"})
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        nickname = str(data.get("nickname") or "").strip()[:64]
+        ok, err = validate_username(username)
+        if not ok:
+            return self._json(400, {"ok": False, "error": err})
+        if len(password) < 6:
+            return self._json(400, {"ok": False, "error": "密码至少 6 位"})
+        if _auth_get_user_by_username(username):
+            return self._json(409, {"ok": False, "error": "用户名已存在"})
+        role = "admin" if _auth_count_users() == 0 else "learner"
+        uid = "u_" + uuid.uuid4().hex[:20]
+        now = int(time.time() * 1000)
+        try:
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO users (id, username, password_hash, role, nickname, status, created_at, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (uid, username, hash_password(password), role,
+                         nickname or None, 1, now, now))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print("[auth] 注册失败：", e)
+            return self._json(500, {"ok": False, "error": "注册失败：" + str(e)})
+        token = create_token(SECRET_KEY, uid, role, TOKEN_TTL)
+        return self._json(200, {"ok": True, "token": token, "user": {
+            "id": uid, "username": username, "role": role, "nickname": nickname or "",
+            "isFirstAdmin": role == "admin",
+        }})
+
+    def _handle_auth_login(self, data):
+        """POST /api/auth/login —— 任何角色（含 learner）均可登录拿 token。"""
+        if not SECRET_KEY:
+            return self._json(500, {"ok": False, "error": "未配置 SECRET_KEY（请设置环境变量后重启）"})
+        if not pyjwt_available():
+            return self._json(500, {"ok": False, "error": "未安装 PyJWT（pip install PyJWT）"})
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        if not username or not password:
+            return self._json(400, {"ok": False, "error": "请输入用户名和密码"})
+        row = _auth_get_user_by_username(username)
+        if not row or not verify_password(password, row.get("password_hash") or ""):
+            return self._json(401, {"ok": False, "error": "用户名或密码错误"})
+        if row.get("status") != 1:
+            return self._json(403, {"ok": False, "error": "账号已被禁用"})
+        token = create_token(SECRET_KEY, row["id"], row["role"], TOKEN_TTL)
+        return self._json(200, {"ok": True, "token": token, "user": {
+            "id": row["id"], "username": row["username"], "role": row["role"],
+            "nickname": row.get("nickname") or "", "avatar": row.get("avatar") or "",
+        }})
+
+    def _handle_auth_me(self, data):
+        """POST /api/auth/me —— 用 token 换当前用户信息。"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "未登录或登录已过期"})
+        return self._json(200, {"ok": True, "user": {
+            "id": ident["id"], "username": ident["username"], "role": ident["role"],
+            "nickname": ident.get("nickname") or "", "avatar": ident.get("avatar") or "",
+        }})
+
 
     def _handle_square_list(self):
         if not (_PYMYSQL_OK and DATABASE_URL):
@@ -2683,6 +2936,7 @@ class Handler(BaseHTTPRequestHandler):
                     item["thumbnail"] = f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}"
                 os.unlink(local_path)
             _square_submit(item)
+            self._log_op(data, "square_submit", "square_item", item.get("id"), {"title": item.get("title")})
             return self._json(200, {"ok": True})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "保存失败：" + str(e)})
@@ -2697,6 +2951,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "缺少 id"})
         try:
             _square_delete(data.get("id"))
+            self._log_op(data, "square_delete", "square_item", data.get("id"))
             return self._json(200, {"ok": True})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "删除失败：" + str(e)})
@@ -2730,6 +2985,7 @@ class Handler(BaseHTTPRequestHandler):
             get_url = _b2_presign_get(key, expires=604800)
             if not put_url:
                 return self._json(500, {"ok": False, "error": "生成上传授权失败"})
+            self._log_op(data, "upload_presign", "b2_object", key, {"kind": kind, "filename": filename})
             return self._json(200, {
                 "ok": True,
                 "key": key,
@@ -2759,6 +3015,7 @@ class Handler(BaseHTTPRequestHandler):
                 Bucket=_B2_BUCKET, Key="videos/index.json",
                 Body=io.BytesIO(body), ContentType="application/json",
             )
+            self._log_op(data, "videos_sync", "videos_index", None, {"count": len(videos)})
             return self._json(200, {"ok": True, "count": len(videos)})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "名单同步失败：" + str(e)})
@@ -2892,6 +3149,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(404, {"ok": False, "error": "评价不存在"})
                 if not self._reviews_save_all(reviews):
                     return self._json(500, {"ok": False, "error": "存储失败"})
+            self._log_op(data, "reviews_delete", "review", rid)
             return self._json(200, {"ok": True, "deleted": rid})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "删除失败：" + str(e)})
@@ -2930,6 +3188,7 @@ class Handler(BaseHTTPRequestHandler):
                               length=len(base64.b64decode(content_b64)),
                               content_type=content_type)
             url = f"https://{bucket}.{os.environ.get('MINIO_ENDPOINT')}/{filename}"
+            self._log_op(data, "upload_file", "file", filename, {"content_type": content_type})
             return self._json(200, {"ok": True, "url": url})
         except Exception as e:
             return self._json(500, {"ok": False, "error": "上传失败：" + str(e)})
@@ -4067,6 +4326,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/transcribe":
                 return self._handle_transcribe(data)
+            if path == "/api/auth/register":
+                return self._handle_auth_register(data)
+            if path == "/api/auth/login":
+                return self._handle_auth_login(data)
+            if path == "/api/auth/me":
+                return self._handle_auth_me(data)
             if path == "/api/square/submit":
                 return self._handle_square_submit(data)
             if path == "/api/square/delete":
@@ -4259,6 +4524,7 @@ if __name__ == "__main__":
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     _square_init()
     _quest_init()
+    _auth_init()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

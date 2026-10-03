@@ -6,3 +6,4 @@ edge-tts
 av
 boto3
 natasha
+PyJWT>=2.8
