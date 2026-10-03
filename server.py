@@ -1445,6 +1445,16 @@ def _quest_init():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_aa_statement_id ON quest_acceptable_answers(statement_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_course_id ON quest_learning_records(course_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_learning_records_created_at ON quest_learning_records(created_at)")
+                # P1-D：订单表（真实支付骨架：微信支付对接位预留，后台手动确认兜底）
+                cur.execute("CREATE TABLE IF NOT EXISTS orders (id VARCHAR(64) PRIMARY KEY, order_no VARCHAR(64) NOT NULL UNIQUE, user_id VARCHAR(64) NOT NULL, plan_key VARCHAR(16) NOT NULL, amount_cents INTEGER NOT NULL, currency VARCHAR(8) NOT NULL DEFAULT 'CNY', status VARCHAR(16) NOT NULL DEFAULT 'created', pay_channel VARCHAR(16) NOT NULL DEFAULT 'wechat', trade_no VARCHAR(64), paid_at BIGINT, created_at BIGINT NOT NULL)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+                # 迁移：users 加 VIP 到期时间（毫秒时间戳；终身=2100-01-01；NULL/0=无 VIP）
+                try:
+                    cur.execute("ALTER TABLE users ADD COLUMN vip_expire_at BIGINT DEFAULT 0")
+                    print("[auth] 迁移：已添加 users.vip_expire_at 字段")
+                except Exception:
+                    pass
                 # 迁移：给 quest_statements 加渐进式序列字段
                 try:
                     cur.execute("ALTER TABLE quest_statements ADD COLUMN sequence_id VARCHAR(64)")
@@ -1547,6 +1557,49 @@ def _auth_init():
         print("[auth] 初始化数据库失败：", e)
 
 
+# ========== P1-D 会员 / 订单（真实支付骨架） ==========
+# 套餐定价（金额单位=分；管理员后续可在后台配置，当前为常量）
+VIP_PLANS = {
+    "month":   {"name": "月付",   "amount_cents": 2900,  "months": 1,  "tag": "月付 29 元"},
+    "quarter": {"name": "季付",   "amount_cents": 8500,  "months": 3,  "tag": "季付 85 元"},
+    "year":    {"name": "年付",   "amount_cents": 34000, "months": 12, "tag": "年付 340 元"},
+    "lifetime": {"name": "终身",  "amount_cents": 100000, "months": None, "tag": "终身 1000 元"},
+}
+LIFETIME_EXPIRE = 4102444800000  # 2100-01-01（终身）
+
+def _wx_pay_ready():
+    """微信支付 v3 四项配置是否齐全（未齐全时前端走人工/兑换码兜底，接口位保留）"""
+    return bool(os.environ.get("WECHAT_MCHID") and os.environ.get("WECHAT_APPID")
+                and os.environ.get("WECHAT_PRIVATE_KEY") and os.environ.get("WECHAT_API_V3_KEY"))
+
+
+def _grant_vip(uid, plan_key):
+    """按套餐为用户发放 VIP 时长。返回 (ok, 新到期ms, 错误)。终身=2100-01-01。"""
+    plan = VIP_PLANS.get(plan_key)
+    if not plan:
+        return False, 0, "未知套餐"
+    now = int(time.time() * 1000)
+    def _upd():
+        conn = _quest_conn()
+        try:
+            with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                cur.execute("SELECT vip_expire_at FROM users WHERE id=%s", (uid,))
+                r = cur.fetchone()
+                cur_vip = (r or {}).get("vip_expire_at") or 0
+                base = max(now, cur_vip)
+                if plan["months"] is None:
+                    new_exp = LIFETIME_EXPIRE
+                else:
+                    new_exp = base + plan["months"] * 30 * 86400 * 1000
+                cur.execute("UPDATE users SET vip_expire_at=%s WHERE id=%s", (new_exp, uid))
+                conn.commit()
+                return new_exp
+        finally:
+            conn.close()
+    result = _auth_db_call(_upd)
+    return (True, result, "") if result else (False, 0, "数据库错误，请重试")
+
+
 def _auth_get_user_by_id(uid):
     if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
         return None
@@ -1555,7 +1608,7 @@ def _auth_get_user_by_id(uid):
         try:
             with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
                 cur.execute(
-                    "SELECT id, username, password_hash, role, nickname, avatar, email, status, created_at "
+                    "SELECT id, username, password_hash, role, nickname, avatar, email, status, created_at, vip_expire_at "
                     "FROM users WHERE id=%s", (uid,))
                 return cur.fetchone()
         finally:
@@ -3307,6 +3360,181 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"ok": False, "error": "统计失败：数据库错误，请重试"})
         return self._json(200, {"ok": True, "stats": stats})
 
+    # ---------- P1-D 会员 / 订单（微信支付骨架 + 后台手动确认兜底） ----------
+
+    def _handle_vip_plans(self, data):
+        """POST /api/vip/plans —— 会员套餐（公开）"""
+        plans = [{"key": k, "name": v["name"], "amount_cents": v["amount_cents"],
+                  "months": v["months"], "tag": v["tag"]} for k, v in VIP_PLANS.items()]
+        return self._json(200, {"ok": True, "plans": plans, "pay_ready": _wx_pay_ready()})
+
+    def _handle_vip_status(self, data):
+        """POST /api/vip/status —— 当前登录用户 VIP 状态"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "请先登录"})
+        now = int(time.time() * 1000)
+        exp = ident.get("vip_expire_at") or 0
+        if exp >= LIFETIME_EXPIRE:
+            is_vip, left, level = True, 99999, "lifetime"
+        elif exp > now:
+            is_vip, left, level = True, max(1, (exp - now) // 86400000), "term"
+        else:
+            is_vip, left, level = False, 0, ""
+        return self._json(200, {"ok": True, "is_vip": is_vip, "vip_expire_at": exp,
+                                "days_left": left, "level": level})
+
+    def _handle_order_create(self, data):
+        """POST /api/order/create —— 创建订单（登录；同用户未支付订单幂等复用）"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "请先登录"})
+        uid = ident["id"]
+        plan_key = str(data.get("plan_key") or "").strip()
+        plan = VIP_PLANS.get(plan_key)
+        if not plan:
+            return self._json(400, {"ok": False, "error": "未知套餐"})
+        now = int(time.time() * 1000)
+
+        def _create():
+            conn = _quest_conn()
+            try:
+                with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                    # 幂等：同一用户最近一张未支付同套餐订单直接复用
+                    cur.execute("SELECT id, order_no FROM orders WHERE user_id=%s AND plan_key=%s AND status='created' ORDER BY created_at DESC LIMIT 1", (uid, plan_key))
+                    r = cur.fetchone()
+                    if r:
+                        return r
+                    oid = "ord_" + uuid.uuid4().hex[:12]
+                    ono = "WX" + str(now) + uuid.uuid4().hex[:4]
+                    cur.execute(
+                        "INSERT INTO orders (id, order_no, user_id, plan_key, amount_cents, currency, status, pay_channel, created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,'CNY','created','wechat',%s)", (oid, ono, uid, plan_key, plan["amount_cents"], now))
+                    conn.commit()
+                    return {"id": oid, "order_no": ono}
+            finally:
+                conn.close()
+
+        result = _auth_db_call(_create)
+        if not result:
+            return self._json(500, {"ok": False, "error": "创建订单失败：数据库错误，请重试"})
+        return self._json(200, {"ok": True, "order_no": result["order_no"],
+                                "plan_key": plan_key, "amount_cents": plan["amount_cents"],
+                                "plan_tag": plan["tag"], "pay_ready": _wx_pay_ready()})
+
+    def _handle_order_status(self, data):
+        """POST /api/order/status —— 查询本人订单状态（前端轮询支付结果）"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "请先登录"})
+        order_no = str(data.get("order_no") or "").strip()
+        if not order_no:
+            return self._json(400, {"ok": False, "error": "缺少订单号"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                    cur.execute("SELECT order_no, plan_key, amount_cents, status, paid_at FROM orders WHERE user_id=%s AND order_no=%s", (ident["id"], order_no))
+                    return cur.fetchone()
+            finally:
+                conn.close()
+        row = _auth_db_call(_q)
+        if not row:
+            return self._json(404, {"ok": False, "error": "订单不存在"})
+        return self._json(200, {"ok": True, "order": row})
+
+    def _handle_order_manual_pay(self, data):
+        """POST /api/order/manual-pay —— 管理员手动确认收款（兜底：无支付资质阶段）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        order_no = str(data.get("order_no") or "").strip()
+        trade_no = str(data.get("trade_no") or "").strip()[:64]
+        if not order_no:
+            return self._json(400, {"ok": False, "error": "缺少订单号"})
+
+        def _pay():
+            conn = _quest_conn()
+            try:
+                with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                    cur.execute("SELECT user_id, plan_key, status FROM orders WHERE order_no=%s", (order_no,))
+                    r = cur.fetchone()
+                    if not r:
+                        return None
+                    if r["status"] == "paid":
+                        return {"dup": True, "user_id": r["user_id"], "plan_key": r["plan_key"]}
+                    now = int(time.time() * 1000)
+                    cur.execute("UPDATE orders SET status='paid', trade_no=%s, paid_at=%s WHERE order_no=%s AND status='created'", (trade_no or order_no, now, order_no))
+                    if cur.rowcount != 1:
+                        return None
+                    conn.commit()
+                    return {"dup": False, "user_id": r["user_id"], "plan_key": r["plan_key"]}
+            finally:
+                conn.close()
+
+        row = _auth_db_call(_pay)
+        if not row:
+            return self._json(404, {"ok": False, "error": "订单不存在或状态已变更"})
+        if row.get("dup"):
+            return self._json(200, {"ok": True, "already_paid": True})
+        ok, new_exp, e = _grant_vip(row["user_id"], row["plan_key"])
+        if not ok:
+            return self._json(500, {"ok": False, "error": e})
+        self._log_op(data, "order_manual_pay", "order", order_no, {"plan": row["plan_key"], "vip_expire_at": new_exp})
+        return self._json(200, {"ok": True, "vip_expire_at": new_exp})
+
+    def _handle_admin_orders(self, data):
+        """POST /api/admin/orders —— 订单列表（admin，分页搜索）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        try:
+            page = max(1, int(data.get("page") or 1))
+            size = min(50, max(1, int(data.get("size") or 10)))
+        except (TypeError, ValueError):
+            page, size = 1, 10
+        q = str(data.get("q") or "").strip()[:64]
+        status = str(data.get("status") or "").strip()
+        offset = (page - 1) * size
+
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                    where = ["1=1"]
+                    args = []
+                    if status and status in ("created", "paid", "failed", "cancelled"):
+                        where.append("o.status=%s"); args.append(status)
+                    if q:
+                        where.append("(o.order_no LIKE %s OR u.username LIKE %s)"); args.append("%" + q + "%"); args.append("%" + q + "%")
+                    sql = ("SELECT o.order_no, o.user_id, u.username, o.plan_key, o.amount_cents, o.currency, o.status, "
+                           "o.pay_channel, o.trade_no, o.paid_at, o.created_at FROM orders o "
+                           "LEFT JOIN users u ON u.id=o.user_id WHERE " + " AND ".join(where) +
+                           " ORDER BY o.created_at DESC LIMIT %s OFFSET %s")
+                    cur.execute(sql, args + [size, offset])
+                    rows = cur.fetchall()
+                    cur.execute("SELECT COUNT(*) c FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE " + " AND ".join(where), args)
+                    total = cur.fetchone()["c"]
+                    return {"rows": rows, "total": total}
+            finally:
+                conn.close()
+
+        result = _auth_db_call(_q)
+        if not result:
+            return self._json(500, {"ok": False, "error": "查询订单失败（数据库不可用）"})
+        return self._json(200, {"ok": True, "rows": result["rows"], "total": result["total"], "page": page, "size": size})
+
+    def _handle_pay_wechat_notify(self, data):
+        """POST /api/pay/wechat/notify —— 微信支付 v3 回调（骨架：配置未齐时拒绝，齐全后启用）
+        真实对接位：验签(WECHAT_API_V3_KEY AES-256-GCM 解密 resource) → 查订单 → 标记 paid → 发 VIP。
+        当前实现保留幂等接口，配置齐全即可上线，无需改前端。"""
+        if not _wx_pay_ready():
+            return self._json(503, {"ok": False, "error": "微信支付未配置"})
+        # TODO(资质到位后)：校验 Wechatpay-Signature 请求头（RSA-SHA256 + 平台证书），
+        # 用 WECHAT_API_V3_KEY 对 body.resource 做 AES-256-GCM 解密得到 {out_trade_no, transaction_id, ...}，
+        # 调用与 _handle_order_manual_pay 相同的“订单→paid→_grant_vip”原子流程（幂等）。
+        return self._json(501, {"ok": False, "error": "微信支付对接位已预留，待配置"})
+
     def _handle_admin_user_status(self, data):
         err = self._require_admin(data)
         if err:
@@ -4730,6 +4958,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_users_list(data)
             if path == "/api/admin/dashboard/stats":
                 return self._handle_admin_dashboard_stats(data)
+            if path == "/api/vip/plans":
+                return self._handle_vip_plans(data)
+            if path == "/api/vip/status":
+                return self._handle_vip_status(data)
+            if path == "/api/order/create":
+                return self._handle_order_create(data)
+            if path == "/api/order/status":
+                return self._handle_order_status(data)
+            if path == "/api/order/manual-pay":
+                return self._handle_order_manual_pay(data)
+            if path == "/api/admin/orders":
+                return self._handle_admin_orders(data)
+            if path == "/api/pay/wechat/notify":
+                return self._handle_pay_wechat_notify(data)
             if path == "/api/admin/users/role":
                 return self._handle_admin_user_role(data)
             if path == "/api/admin/users/status":
