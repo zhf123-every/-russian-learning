@@ -20,6 +20,7 @@ import base64
 import io
 import json
 import os
+import hashlib
 import re
 import secrets
 import shutil
@@ -1449,6 +1450,18 @@ def _quest_init():
                 cur.execute("CREATE TABLE IF NOT EXISTS orders (id VARCHAR(64) PRIMARY KEY, order_no VARCHAR(64) NOT NULL UNIQUE, user_id VARCHAR(64) NOT NULL, plan_key VARCHAR(16) NOT NULL, amount_cents INTEGER NOT NULL, currency VARCHAR(8) NOT NULL DEFAULT 'CNY', status VARCHAR(16) NOT NULL DEFAULT 'created', pay_channel VARCHAR(16) NOT NULL DEFAULT 'wechat', trade_no VARCHAR(64), paid_at BIGINT, created_at BIGINT NOT NULL)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+                # P1-C：课程分类表（主分类 + 子分类；sort_order 排序、is_active 启停；商城标签栏与后台表单数据源）
+                cur.execute("CREATE TABLE IF NOT EXISTS categories (id VARCHAR(64) PRIMARY KEY, name VARCHAR(64) NOT NULL, sub_name VARCHAR(64) NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0, is_active TINYINT NOT NULL DEFAULT 1, created_at BIGINT NOT NULL DEFAULT 0, UNIQUE KEY uk_categories_name_sub (name, sub_name))")
+                for _sd in _CATEGORY_SEEDS:
+                    _sd_id = "cat_" + hashlib.md5((_sd["name"] + "|" + _sd["sub_name"]).encode("utf-8")).hexdigest()[:16]
+                    cur.execute("INSERT IGNORE INTO categories (id, name, sub_name, sort_order, is_active, created_at) VALUES (%s, %s, %s, %s, 1, %s)",
+                                (_sd_id, _sd["name"], _sd["sub_name"], _sd["sort_order"], int(time.time() * 1000)))
+                # 迁移：课程包加子分类字段（可空；主分类沿用既有 category 字段）
+                try:
+                    cur.execute("ALTER TABLE quest_course_packs ADD COLUMN sub_category VARCHAR(64)")
+                    print("[quest] 迁移：已添加 quest_course_packs.sub_category 字段")
+                except Exception:
+                    pass
                 # 迁移：users 加 VIP 到期时间（毫秒时间戳；终身=2100-01-01；NULL/0=无 VIP）
                 try:
                     cur.execute("ALTER TABLE users ADD COLUMN vip_expire_at BIGINT DEFAULT 0")
@@ -1566,6 +1579,55 @@ VIP_PLANS = {
     "lifetime": {"name": "终身",  "amount_cents": 108800, "months": None, "tag": "终身 1088 元"},
 }
 LIFETIME_EXPIRE = 4102444800000  # 2100-01-01（终身）
+
+# ========== P1-C 课程分类 ==========
+# 种子分类：与前端商城/后台表单既有体系对齐（主分类 + 子分类；sort_order 由序号决定）。
+# 首次建表写入；后续后台可增删改。INSERT IGNORE 保证幂等。
+_CATEGORY_SEEDS = [
+    ("教材同步", "全部"), ("教材同步", "走遍俄罗斯"), ("教材同步", "新概念俄语"), ("教材同步", "大学俄语"),
+    ("教材同步", "东方俄语"), ("教材同步", "黑大俄语"), ("教材同步", "北外俄语"), ("教材同步", "人教版初中"),
+    ("教材同步", "人教版高中"), ("教材同步", "自编课"),
+    ("考试备考", "全部"), ("考试备考", "中高考"), ("考试备考", "专四专八"), ("考试备考", "考研"),
+    ("考试备考", "ТРКИ等级"), ("考试备考", "留学预科"), ("考试备考", "CATTI"), ("考试备考", "职业俄语"),
+    ("少儿俄语", "全部"), ("少儿俄语", "少儿启蒙"), ("少儿俄语", "动画分级"), ("少儿俄语", "分级阅读"),
+    ("少儿俄语", "动画绘本"), ("少儿俄语", "儿歌童谣"), ("少儿俄语", "字母拼读"), ("少儿俄语", "少儿词汇"),
+    ("基础俄语", "全部"), ("基础俄语", "零基础路线"), ("基础俄语", "字母发音"), ("基础俄语", "基础语法"),
+    ("基础俄语", "基础词汇"), ("基础俄语", "核心句型"), ("基础俄语", "经典教材"), ("基础俄语", "综合提升"),
+    ("语法专项", "全部"), ("语法专项", "主格"), ("语法专项", "属格"), ("语法专项", "与格"),
+    ("语法专项", "宾格"), ("语法专项", "工具格"), ("语法专项", "前置格"),
+    ("场景俄语", "全部"), ("场景俄语", "日常对话"), ("场景俄语", "商务职场"), ("场景俄语", "外贸商务"),
+    ("场景俄语", "旅游出行"), ("场景俄语", "面试校园"), ("场景俄语", "社交口语"), ("场景俄语", "写作邮件"),
+    ("阅读听力", "全部"), ("阅读听力", "短文精读"), ("阅读听力", "俄语故事"), ("阅读听力", "名著简写"),
+    ("阅读听力", "新闻短文"), ("阅读听力", "文化科普"), ("阅读听力", "专业阅读"),
+    ("影视俄语", "全部"), ("影视俄语", "情景剧"), ("影视俄语", "影视台词"), ("影视俄语", "电影片段"),
+    ("影视俄语", "动画片段"), ("影视俄语", "经典教材剧"),
+    ("音乐俄语", "全部"), ("音乐俄语", "俄语歌曲"),
+]
+_CATEGORY_SEEDS = [{"name": n, "sub_name": s, "sort_order": i} for i, (n, s) in enumerate(_CATEGORY_SEEDS)]
+
+def _category_rows(active_only=True):
+    """读取分类行；active_only=True 只返回启用项（按 sort_order 排序）。"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+            if active_only:
+                cur.execute("SELECT id, name, sub_name, sort_order, is_active FROM categories WHERE is_active=1 ORDER BY sort_order ASC, created_at ASC")
+            else:
+                cur.execute("SELECT id, name, sub_name, sort_order, is_active FROM categories ORDER BY sort_order ASC, created_at ASC")
+            return cur.fetchall() or []
+    finally:
+        conn.close()
+
+def _categories_tree():
+    """公开分类树：主分类 -> 子分类列表（'全部' 恒为首项）。"""
+    rows = _category_rows(active_only=True)
+    tree, order = [], []
+    for r in rows:
+        if r["name"] not in order:
+            order.append(r["name"]); tree.append({"name": r["name"], "subs": []})
+        tree[order.index(r["name"])]["subs"].append(r["sub_name"] or "全部")
+    return tree
+
 
 def _wx_pay_ready():
     """微信支付 v3 四项配置是否齐全（未齐全时前端走人工/兑换码兜底，接口位保留）"""
@@ -3524,6 +3586,101 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"ok": False, "error": "查询订单失败（数据库不可用）"})
         return self._json(200, {"ok": True, "rows": result["rows"], "total": result["total"], "page": page, "size": size})
 
+    def _handle_categories_tree(self, data=None):
+        """POST /api/categories/tree —— 公开分类树（商城标签栏/后台表单数据源；失败时前端回退静态体系）"""
+        try:
+            return self._json(200, {"ok": True, "tree": _categories_tree()})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "读取分类失败：" + str(e)})
+
+    def _handle_admin_categories_list(self, data):
+        """POST /api/admin/categories/list —— 全量分类（含停用），admin"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        try:
+            rows = _category_rows(active_only=False)
+            return self._json(200, {"ok": True, "rows": rows})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "读取分类失败：" + str(e)})
+
+    def _handle_admin_categories_save(self, data):
+        """POST /api/admin/categories/save —— 新增/修改分类（id 存在=改，否则=增），admin"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        name = str(data.get("name") or "").strip()[:64]
+        sub_name = str(data.get("sub_name") or "").strip()[:64]
+        if not name:
+            return self._json(400, {"ok": False, "error": "主分类不能为空"})
+        cid = str(data.get("id") or "").strip()
+        try:
+            sort_order = int(data.get("sort_order") or 0)
+        except (TypeError, ValueError):
+            sort_order = 0
+        # 缺省视为启用（新增即上架）；显式传 0/false 才停用
+        is_active = 0 if data.get("is_active") in (0, False, "0", "false") else 1
+
+        def _save():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    if cid:
+                        cur.execute("UPDATE categories SET name=%s, sub_name=%s, sort_order=%s, is_active=%s WHERE id=%s",
+                                    (name, sub_name, sort_order, is_active, cid))
+                        if cur.rowcount == 0:
+                            return "not_found"
+                    else:
+                        nid = "cat_" + hashlib.md5((name + "|" + sub_name).encode("utf-8")).hexdigest()[:16]
+                        cur.execute("INSERT INTO categories (id, name, sub_name, sort_order, is_active, created_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                                    (nid, name, sub_name, sort_order, is_active, int(time.time() * 1000)))
+                    conn.commit()
+                    return "ok"
+            except Exception as e:
+                conn.rollback()
+                return "dup" if ("Duplicate" in str(e)) else ("err:" + str(e))
+            finally:
+                conn.close()
+
+        result = _auth_db_call(_save)
+        if result == "ok":
+            return self._json(200, {"ok": True})
+        if result == "not_found":
+            return self._json(404, {"ok": False, "error": "分类不存在"})
+        if result == "dup":
+            return self._json(400, {"ok": False, "error": "该主分类下的子分类已存在"})
+        return self._json(500, {"ok": False, "error": "保存失败：" + str(result)})
+
+    def _handle_admin_categories_delete(self, data):
+        """POST /api/admin/categories/delete —— 删除分类；{id} 删单条，{name} 删整个主分类（含其所有子分类），admin"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        cid = str(data.get("id") or "").strip()
+        name = str(data.get("name") or "").strip()
+
+        def _del():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    if cid:
+                        cur.execute("DELETE FROM categories WHERE id=%s", (cid,))
+                    elif name:
+                        cur.execute("DELETE FROM categories WHERE name=%s", (name,))
+                    else:
+                        return "param"
+                    conn.commit()
+                    return "ok"
+            finally:
+                conn.close()
+
+        result = _auth_db_call(_del)
+        if result == "ok":
+            return self._json(200, {"ok": True})
+        if result == "param":
+            return self._json(400, {"ok": False, "error": "缺少 id 或 name"})
+        return self._json(500, {"ok": False, "error": "删除失败"})
+
     def _handle_pay_wechat_notify(self, data):
         """POST /api/pay/wechat/notify —— 微信支付 v3 回调（骨架：配置未齐时拒绝，齐全后启用）
         真实对接位：验签(WECHAT_API_V3_KEY AES-256-GCM 解密 resource) → 查订单 → 标记 paid → 发 VIP。
@@ -4972,6 +5129,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_orders(data)
             if path == "/api/pay/wechat/notify":
                 return self._handle_pay_wechat_notify(data)
+            if path == "/api/categories/tree":
+                return self._handle_categories_tree(data)
+            if path == "/api/admin/categories/list":
+                return self._handle_admin_categories_list(data)
+            if path == "/api/admin/categories/save":
+                return self._handle_admin_categories_save(data)
+            if path == "/api/admin/categories/delete":
+                return self._handle_admin_categories_delete(data)
             if path == "/api/admin/users/role":
                 return self._handle_admin_user_role(data)
             if path == "/api/admin/users/status":
