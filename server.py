@@ -1562,8 +1562,8 @@ def _auth_init():
 VIP_PLANS = {
     "month":   {"name": "月付",   "amount_cents": 2900,  "months": 1,  "tag": "月付 29 元"},
     "quarter": {"name": "季付",   "amount_cents": 8500,  "months": 3,  "tag": "季付 85 元"},
-    "year":    {"name": "年付",   "amount_cents": 34000, "months": 12, "tag": "年付 340 元"},
-    "lifetime": {"name": "终身",  "amount_cents": 100000, "months": None, "tag": "终身 1000 元"},
+    "year":    {"name": "年付",   "amount_cents": 34500, "months": 12, "tag": "年付 345 元"},
+    "lifetime": {"name": "终身",  "amount_cents": 108800, "months": None, "tag": "终身 1088 元"},
 }
 LIFETIME_EXPIRE = 4102444800000  # 2100-01-01（终身）
 
