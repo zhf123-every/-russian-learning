@@ -3857,6 +3857,57 @@ class Handler(BaseHTTPRequestHandler):
         # 调用与 _handle_order_manual_pay 相同的“订单→paid→_grant_vip”原子流程（幂等）。
         return self._json(501, {"ok": False, "error": "微信支付对接位已预留，待配置"})
 
+    def _handle_admin_user_detail(self, data):
+        """POST /api/admin/users/detail —— 用户详情页聚合（用户 + VIP + 订单 + 学习记录 + 统计）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        uid = str(data.get("id") or "").strip()
+        if not uid:
+            return self._json(400, {"ok": False, "error": "缺少用户 id"})
+        target = _auth_get_user_by_id(uid)
+        if not target:
+            return self._json(404, {"ok": False, "error": "用户不存在"})
+        target.pop("password_hash", None)
+
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, order_no, plan_key, amount_cents, currency, status, pay_channel, trade_no, paid_at, created_at "
+                        "FROM orders WHERE user_id=%s ORDER BY created_at DESC LIMIT 20", (uid,))
+                    orders = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+                    cur.execute(
+                        "SELECT course_id, unit_id, mode, seq_index, unit_index, difficulty, status, ts "
+                        "FROM quest_learning_progress WHERE user_id=%s ORDER BY ts DESC LIMIT 50", (uid,))
+                    progress = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+                    cur.execute("SELECT COUNT(*) FROM quest_learning_progress WHERE user_id=%s", (uid,))
+                    total_records = cur.fetchone()[0] or 0
+                    cur.execute("SELECT COUNT(DISTINCT course_id) FROM quest_learning_progress WHERE user_id=%s", (uid,))
+                    total_courses = cur.fetchone()[0] or 0
+                    cur.execute("SELECT COUNT(DISTINCT unit_id) FROM quest_learning_progress WHERE user_id=%s AND status=1", (uid,))
+                    done_units = cur.fetchone()[0] or 0
+                return orders, progress, total_records, total_courses, done_units
+            finally:
+                conn.close()
+
+        try:
+            orders, progress, total_records, total_courses, done_units = _q()
+        except Exception as e:
+            print("[admin] 用户详情查询失败：", e)
+            return self._json(500, {"ok": False, "error": "查询详情失败（数据库不可用）"})
+        active_days = len({time.strftime("%Y-%m-%d", time.localtime(p["ts"] / 1000)) for p in progress})
+        stats = {
+            "total_records": total_records,
+            "courses": total_courses,
+            "done_units": done_units,
+            "active_days": active_days,
+            "last_ts": progress[0]["ts"] if progress else 0,
+        }
+        self._log_op(data, "user_detail_view", "user", uid, {"username": target.get("username")})
+        return self._json(200, {"ok": True, "user": target, "orders": orders, "progress": progress, "stats": stats})
+
     def _handle_admin_user_status(self, data):
         err = self._require_admin(data)
         if err:
@@ -5314,6 +5365,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_user_status(data)
             if path == "/api/admin/users/reset-password":
                 return self._handle_admin_user_reset_password(data)
+            if path == "/api/admin/users/detail":
+                return self._handle_admin_user_detail(data)
             if path == "/api/learning/progress/save":
                 return self._handle_learning_progress_save(data)
             if path == "/api/learning/progress":
