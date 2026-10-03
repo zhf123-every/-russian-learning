@@ -3236,6 +3236,77 @@ class Handler(BaseHTTPRequestHandler):
         self._log_op(data, "user_role_update", "user", uid, {"role": role, "username": target.get("username")})
         return self._json(200, {"ok": True})
 
+    # ---------- P1-E 数据看板（仅 admin） ----------
+
+    def _handle_admin_dashboard_stats(self, data):
+        """POST /api/admin/dashboard/stats —— 后台数据看板聚合统计"""
+        err = self._require_admin(data)
+        if err:
+            return err
+
+        def _stats():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    now = int(time.time() * 1000)
+                    d7 = now - 7 * 86400 * 1000
+                    d14 = now - 14 * 86400 * 1000
+
+                    # 用户
+                    cur.execute("SELECT role, COUNT(*) FROM users GROUP BY role")
+                    role_rows = {r[0]: r[1] for r in cur.fetchall()}
+                    cur.execute("SELECT COUNT(*) FROM users")
+                    total_users = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= %s", (d7,))
+                    new7 = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= %s", (d14,))
+                    new14 = cur.fetchone()[0]
+
+                    # 近 14 天注册趋势（TiDB: FROM_UNIXTIME(ms/1000)）
+                    cur.execute(
+                        "SELECT DATE(FROM_UNIXTIME(created_at/1000)), COUNT(*) FROM users "
+                        "WHERE created_at >= %s GROUP BY DATE(FROM_UNIXTIME(created_at/1000)) ORDER BY 1", (d14,))
+                    trend = {str(r[0]): r[1] for r in cur.fetchall()}
+
+                    # 课程
+                    cur.execute("SELECT COUNT(*) FROM quest_course_packs")
+                    packs = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(*) FROM quest_courses")
+                    units = cur.fetchone()[0]
+
+                    # 学习记录（含匿名，user_id='' 也计入；活跃按有记名用户）
+                    cur.execute("SELECT COUNT(*), COALESCE(AVG(correct_count / NULLIF(total_count, 0)), 0), COALESCE(MAX(max_combo), 0) FROM quest_learning_records")
+                    lr = cur.fetchone()
+                    cur.execute("SELECT COUNT(*) FROM quest_learning_records WHERE created_at >= %s", (d7,))
+                    lr7 = cur.fetchone()[0]
+                    cur.execute("SELECT COUNT(DISTINCT user_id) FROM quest_learning_records WHERE created_at >= %s AND user_id <> ''", (d7,))
+                    act7 = cur.fetchone()[0]
+
+                    # 评级分布
+                    cur.execute("SELECT rating, COUNT(*) FROM quest_learning_records GROUP BY rating")
+                    ratings = {r[0]: r[1] for r in cur.fetchall()}
+
+                    # 完成次数 Top 课时（关联课时标题）
+                    cur.execute(
+                        "SELECT r.course_id, c.title, COUNT(*) FROM quest_learning_records r "
+                        "LEFT JOIN quest_courses c ON c.id = r.course_id "
+                        "GROUP BY r.course_id, c.title ORDER BY 3 DESC LIMIT 5")
+                    top = [{"course_id": r[0], "title": r[1] or r[0], "count": r[2]} for r in cur.fetchall()]
+                return {
+                    "users": {"total": total_users, "roles": role_rows, "new_7d": new7, "new_14d": new14, "trend": trend},
+                    "courses": {"packs": packs, "units": units},
+                    "learning": {"records": lr[0], "avg_accuracy": round(float(lr[1]) * 100, 1), "max_combo": lr[2], "records_7d": lr7, "active_users_7d": act7},
+                    "ratings": ratings,
+                    "top_courses": top,
+                }
+            finally:
+                conn.close()
+
+        stats = _auth_db_call(_stats)
+        if stats is None:
+            return self._json(500, {"ok": False, "error": "统计失败：数据库错误，请重试"})
+        return self._json(200, {"ok": True, "stats": stats})
+
     def _handle_admin_user_status(self, data):
         err = self._require_admin(data)
         if err:
@@ -4657,6 +4728,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_auth_me(data)
             if path == "/api/admin/users":
                 return self._handle_admin_users_list(data)
+            if path == "/api/admin/dashboard/stats":
+                return self._handle_admin_dashboard_stats(data)
             if path == "/api/admin/users/role":
                 return self._handle_admin_user_role(data)
             if path == "/api/admin/users/status":
