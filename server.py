@@ -3990,22 +3990,35 @@ class Handler(BaseHTTPRequestHandler):
                         h = str(it.get("sentence_hash") or "").strip()
                         d = str(it.get("difficulty") or "medium").strip()
                         segs = it.get("segments") or []
-                        if not h or not isinstance(segs, list) or not segs:
+                        if not h:
                             continue
                         status = str(it.get("review_status") or "ok").strip()
                         if status not in ("ok", "pending"):
                             status = "ok"
-                        # 1) 全局 cache 幂等：存在则复用；pending 且新结果为 ok 时升级
+                        # 1) 全局 cache 幂等
                         row = self._seg_get_cache(cur, h, d)
-                        if row:
-                            cache_id = row["id"]
-                            if status == "ok" and row["review_status"] == "pending":
-                                cur.execute("UPDATE sentence_segment_cache SET review_status='ok' WHERE id=%s", (cache_id,))
+                        if segs:
+                            # 新生成：写 cache（存在则复用；pending 且新结果为 ok 时升级）
+                            if row:
+                                cache_id = row["id"]
+                                if status == "ok" and row["review_status"] == "pending":
+                                    cur.execute("UPDATE sentence_segment_cache SET review_status='ok' WHERE id=%s", (cache_id,))
+                            else:
+                                cache_id = "segc_" + hashlib.md5((h + "|" + d).encode("utf-8")).hexdigest()[:20]
+                                cur.execute("INSERT INTO sentence_segment_cache (id, sentence_hash, sentence, difficulty, segments, review_status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                            (cache_id, h, str(it.get("sentence") or ""), d,
+                                             json.dumps(segs, ensure_ascii=False), status, now))
                         else:
-                            cache_id = "segc_" + hashlib.md5((h + "|" + d).encode("utf-8")).hexdigest()[:20]
-                            cur.execute("INSERT INTO sentence_segment_cache (id, sentence_hash, sentence, difficulty, segments, review_status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                                        (cache_id, h, str(it.get("sentence") or ""), d,
-                                         json.dumps(segs, ensure_ascii=False), status, now))
+                            # 纯引用：不调 AI 的句子，从全局缓存取语块写引用行（无缓存则跳过）
+                            if not row:
+                                continue
+                            cache_id = row["id"]
+                            cur.execute("SELECT segments FROM sentence_segment_cache WHERE id=%s", (cache_id,))
+                            _seg_json = cur.fetchone()
+                            if not _seg_json:
+                                continue
+                            segs = json.loads(_seg_json[0])
+                            status = row["review_status"]
                         # 2) 课时引用行
                         for s in segs:
                             seg_id = "segs_" + hashlib.md5((course_id + "|" + unit_id + "|" + h + "|" + d + "|" + str(s.get("sort_order") or 0)).encode("utf-8")).hexdigest()[:20]
