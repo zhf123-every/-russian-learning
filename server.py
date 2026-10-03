@@ -1462,6 +1462,9 @@ def _quest_init():
                     print("[quest] 迁移：已添加 quest_course_packs.sub_category 字段")
                 except Exception:
                     pass
+                # P1-F：系统设置（key-value；VIP 套餐价格/站点信息后台可配，缺省用常量）
+                cur.execute("CREATE TABLE IF NOT EXISTS settings (k VARCHAR(64) PRIMARY KEY, v TEXT, updated_at BIGINT NOT NULL)")
+                _seed_settings(cur)
                 # 迁移：users 加 VIP 到期时间（毫秒时间戳；终身=2100-01-01；NULL/0=无 VIP）
                 try:
                     cur.execute("ALTER TABLE users ADD COLUMN vip_expire_at BIGINT DEFAULT 0")
@@ -1629,6 +1632,94 @@ def _categories_tree():
     return tree
 
 
+# ========== P1-F 系统设置 ==========
+_DEFAULT_SITE = {"site_name": "看视频学俄语", "site_subtitle": "Russian Learning", "announcement": ""}
+
+def _seed_settings(cur):
+    """初始化缺省设置（INSERT IGNORE：已有配置不覆盖）。vip_plans 与 VIP_PLANS 常量保持一致。"""
+    _seed_rows = {
+        "site": json.dumps(_DEFAULT_SITE, ensure_ascii=False),
+        "vip_plans": json.dumps(VIP_PLANS, ensure_ascii=False),
+    }
+    for k, v in _seed_rows.items():
+        cur.execute("INSERT IGNORE INTO settings (k, v, updated_at) VALUES (%s, %s, %s)", (k, v, int(time.time() * 1000)))
+
+def _get_settings(key, default=None):
+    """读单个设置；缺失/解析失败返回 default。"""
+    conn = _quest_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT v FROM settings WHERE k=%s", (key,))
+            r = cur.fetchone()
+            if not r:
+                return default
+            return r[0]
+    except Exception:
+        return default
+    finally:
+        conn.close()
+
+def _save_settings(key, value, is_json=True):
+    """写单个设置（JSON 序列化或原样存）。"""
+    text = json.dumps(value, ensure_ascii=False) if is_json else str(value)
+    conn = _quest_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO settings (k, v, updated_at) VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE v=%s, updated_at=%s",
+                        (key, text, int(time.time() * 1000), text, int(time.time() * 1000)))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def _vip_plans():
+    """动态套餐配置：settings.vip_plans 优先；未配置/非法则回退 VIP_PLANS 常量。"""
+    raw = _get_settings("vip_plans", None)
+    if raw:
+        try:
+            cfg = json.loads(raw)
+            if isinstance(cfg, dict) and cfg:
+                # 白名单校验：仅接受已知套餐 key 且结构完整
+                plans = {}
+                for k in ("month", "quarter", "year", "lifetime"):
+                    if k in cfg and isinstance(cfg[k], dict) and "amount_cents" in cfg[k]:
+                        p = dict(cfg[k])
+                        p.setdefault("name", VIP_PLANS[k]["name"])
+                        p.setdefault("months", VIP_PLANS[k]["months"])
+                        p.setdefault("tag", VIP_PLANS[k]["tag"])
+                        try:
+                            p["amount_cents"] = int(p["amount_cents"])
+                        except (TypeError, ValueError):
+                            continue
+                        if p["amount_cents"] < 0:
+                            continue
+                        plans[k] = p
+                if plans:
+                    return plans
+        except Exception:
+            pass
+    return VIP_PLANS
+
+def _site_info():
+    """站点公开信息（站点名/副标题/公告）；缺省回退常量。"""
+    raw = _get_settings("site", None)
+    if raw:
+        try:
+            s = json.loads(raw)
+            if isinstance(s, dict):
+                out = dict(_DEFAULT_SITE)
+                for k in out:
+                    if k in s and s[k] is not None:
+                        out[k] = str(s[k])[:200]
+                return out
+        except Exception:
+            pass
+    return dict(_DEFAULT_SITE)
+
+
 def _wx_pay_ready():
     """微信支付 v3 四项配置是否齐全（未齐全时前端走人工/兑换码兜底，接口位保留）"""
     return bool(os.environ.get("WECHAT_MCHID") and os.environ.get("WECHAT_APPID")
@@ -1637,7 +1728,7 @@ def _wx_pay_ready():
 
 def _grant_vip(uid, plan_key):
     """按套餐为用户发放 VIP 时长。返回 (ok, 新到期ms, 错误)。终身=2100-01-01。"""
-    plan = VIP_PLANS.get(plan_key)
+    plan = _vip_plans().get(plan_key)
     if not plan:
         return False, 0, "未知套餐"
     now = int(time.time() * 1000)
@@ -3425,9 +3516,9 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- P1-D 会员 / 订单（微信支付骨架 + 后台手动确认兜底） ----------
 
     def _handle_vip_plans(self, data):
-        """POST /api/vip/plans —— 会员套餐（公开）"""
+        """POST /api/vip/plans —— 会员套餐（公开；价格后台可配，缺省用常量）"""
         plans = [{"key": k, "name": v["name"], "amount_cents": v["amount_cents"],
-                  "months": v["months"], "tag": v["tag"]} for k, v in VIP_PLANS.items()]
+                  "months": v["months"], "tag": v["tag"]} for k, v in _vip_plans().items()]
         return self._json(200, {"ok": True, "plans": plans, "pay_ready": _wx_pay_ready()})
 
     def _handle_vip_status(self, data):
@@ -3453,7 +3544,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(401, {"ok": False, "error": "请先登录"})
         uid = ident["id"]
         plan_key = str(data.get("plan_key") or "").strip()
-        plan = VIP_PLANS.get(plan_key)
+        plan = _vip_plans().get(plan_key)
         if not plan:
             return self._json(400, {"ok": False, "error": "未知套餐"})
         now = int(time.time() * 1000)
@@ -3680,6 +3771,80 @@ class Handler(BaseHTTPRequestHandler):
         if result == "param":
             return self._json(400, {"ok": False, "error": "缺少 id 或 name"})
         return self._json(500, {"ok": False, "error": "删除失败"})
+
+    # ---------- P1-F 系统设置 ----------
+
+    def _handle_settings_public(self, data=None):
+        """POST /api/settings/public —— 公开设置（站点信息 + 套餐价格；商城/VIP 弹窗读）"""
+        try:
+            plans = [{"key": k, "name": v["name"], "amount_cents": v["amount_cents"],
+                      "months": v["months"], "tag": v["tag"]} for k, v in _vip_plans().items()]
+            site = _site_info()
+            return self._json(200, {"ok": True, "site": site, "plans": plans})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "读取设置失败：" + str(e)})
+
+    def _handle_admin_settings_get(self, data):
+        """POST /api/admin/settings/get —— 全量设置（admin）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        try:
+            return self._json(200, {"ok": True, "site": _site_info(), "vip_plans": _vip_plans()})
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": "读取设置失败：" + str(e)})
+
+    def _handle_admin_settings_save(self, data):
+        """POST /api/admin/settings/save —— 保存设置（admin）：site{name,subtitle,announcement} + vip_plans{month/quarter/year/lifetime}"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        site = data.get("site")
+        if site is not None:
+            if not isinstance(site, dict):
+                return self._json(400, {"ok": False, "error": "site 参数格式错误"})
+            merged = dict(_DEFAULT_SITE)
+            for k in merged:
+                if k in site:
+                    merged[k] = str(site[k] or "").strip()[:200]
+            if not merged["site_name"]:
+                return self._json(400, {"ok": False, "error": "站点名称不能为空"})
+            if not _save_settings("site", merged):
+                return self._json(500, {"ok": False, "error": "保存站点信息失败"})
+        plans = data.get("vip_plans")
+        if plans is not None:
+            if not isinstance(plans, dict):
+                return self._json(400, {"ok": False, "error": "vip_plans 参数格式错误"})
+            base = _vip_plans()
+            new_plans = {}
+            for k in ("month", "quarter", "year", "lifetime"):
+                p = plans.get(k)
+                if p is None:
+                    new_plans[k] = base[k]
+                    continue
+                if not isinstance(p, dict):
+                    return self._json(400, {"ok": False, "error": "套餐 " + k + " 格式错误"})
+                try:
+                    amount = int(p.get("amount_cents", base[k]["amount_cents"]))
+                except (TypeError, ValueError):
+                    return self._json(400, {"ok": False, "error": "套餐 " + k + " 价格必须为整数（单位：分）"})
+                if amount < 0:
+                    return self._json(400, {"ok": False, "error": "套餐 " + k + " 价格不能为负"})
+                name = str(p.get("name") or base[k]["name"]).strip()[:32]
+                months = p.get("months")
+                if months is not None:
+                    try:
+                        months = int(months)
+                    except (TypeError, ValueError):
+                        return self._json(400, {"ok": False, "error": "套餐 " + k + " 时长必须为整数（月）或 null"})
+                    if months < 1:
+                        return self._json(400, {"ok": False, "error": "套餐 " + k + " 时长必须 ≥1 个月或为终身"})
+                tag = str(p.get("tag") or (name + " " + str(amount // 100) + " 元")).strip()[:64]
+                new_plans[k] = {"name": name, "amount_cents": amount, "months": months, "tag": tag}
+            if not _save_settings("vip_plans", new_plans):
+                return self._json(500, {"ok": False, "error": "保存套餐配置失败"})
+        return self._json(200, {"ok": True})
+
 
     def _handle_pay_wechat_notify(self, data):
         """POST /api/pay/wechat/notify —— 微信支付 v3 回调（骨架：配置未齐时拒绝，齐全后启用）
@@ -5137,6 +5302,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_categories_save(data)
             if path == "/api/admin/categories/delete":
                 return self._handle_admin_categories_delete(data)
+            if path == "/api/settings/public":
+                return self._handle_settings_public(data)
+            if path == "/api/admin/settings/get":
+                return self._handle_admin_settings_get(data)
+            if path == "/api/admin/settings/save":
+                return self._handle_admin_settings_save(data)
             if path == "/api/admin/users/role":
                 return self._handle_admin_user_role(data)
             if path == "/api/admin/users/status":
