@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -57,7 +58,7 @@ from answer_engine import AnswerEngine
 from auth_lib import (
     hash_password, verify_password, create_token, decode_token,
     extract_bearer, validate_username, pyjwt_available,
-    BACKEND_ROLES, ADMIN_WRITE_ROLES,
+    ROLES, BACKEND_ROLES, ADMIN_WRITE_ROLES,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -1593,29 +1594,137 @@ def _auth_count_users():
 
 def _auth_db_call(fn):
     """执行一次 DB 操作；若因 TiDB 空闲连接回收/Serverless 休眠等原因报
-    『连接丢失/超时/无法连接』，自动重连并重试一次，避免偶发 500。
-    休眠唤醒场景：连接失败后先等待 15s（唤醒通常 10-60s）再重试。"""
-    try:
-        return fn()
-    except Exception as e:
-        msg = str(e)
-        if ("Lost connection" in msg or "2013" in msg or "2006" in msg
-                or "timed out" in msg or "Broken pipe" in msg):
-            try:
-                return fn()
-            except Exception as e2:
-                print("[auth] 重连重试失败：", e2)
-                return None
-        if "Can't connect" in msg or "2003" in msg or "10060" in msg:
-            print("[auth] 连接失败，等待 15s 后重试（可能 TiDB 休眠唤醒中）……")
-            time.sleep(15)
-            try:
-                return fn()
-            except Exception as e2:
-                print("[auth] 唤醒重试仍失败：", e2)
-                return None
-        print("[auth] 数据库操作失败：", e)
+    『连接丢失/超时/无法连接』，自动重连并重试，避免偶发 500。
+    - Lost connection / timeout：最多重试 3 次，退避 2s/4s（Serverless 连接回收频繁）
+    - Can't connect / 10060：先等待 15s（休眠唤醒通常 10-60s）再重试一次"""
+    last_err = None
+    for attempt in (1, 2, 3):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if ("Lost connection" in msg or "2013" in msg or "2006" in msg
+                    or "timed out" in msg or "Broken pipe" in msg):
+                if attempt < 3:
+                    time.sleep(2 * attempt)  # 2s、4s 退避
+                    continue
+                break
+            if "Can't connect" in msg or "2003" in msg or "10060" in msg:
+                print("[auth] 连接失败，等待 15s 后重试（可能 TiDB 休眠唤醒中）……")
+                time.sleep(15)
+                try:
+                    return fn()
+                except Exception as e2:
+                    print("[auth] 唤醒重试仍失败：", e2)
+                    return None
+            break
+    print("[auth] 数据库操作失败：", last_err)
+    return None
+
+
+# ================= P1-A 用户管理（后台 admin 专属） =================
+
+def _auth_list_users(page, size, q):
+    """分页查询用户列表（不返回 password_hash）。失败返回 None。"""
+    if not (_PYMYSQL_OK and DATABASE_URL):
         return None
+    def _q():
+        conn = _quest_conn()
+        try:
+            like = "%%%s%%" % (q or "")
+            offset = (page - 1) * size
+            with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                if q:
+                    cur.execute(
+                        "SELECT id, username, nickname, role, status, email, created_at "
+                        "FROM users WHERE username LIKE %s OR nickname LIKE %s "
+                        "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        (like, like, size, offset))
+                    rows = cur.fetchall()
+                    cur.execute(
+                        "SELECT COUNT(*) AS c FROM users WHERE username LIKE %s OR nickname LIKE %s",
+                        (like, like))
+                    total = cur.fetchone()["c"]
+                else:
+                    cur.execute(
+                        "SELECT id, username, nickname, role, status, email, created_at "
+                        "FROM users ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        (size, offset))
+                    rows = cur.fetchall()
+                    cur.execute("SELECT COUNT(*) AS c FROM users")
+                    total = cur.fetchone()["c"]
+                return {"rows": rows, "total": total}
+        finally:
+            conn.close()
+    return _auth_db_call(_q)
+
+
+def _auth_update_user_role(uid, role):
+    if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
+        return None
+    def _q():
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET role=%s, updated_at=%s WHERE id=%s",
+                    (role, int(time.time() * 1000), uid))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    return _auth_db_call(_q)
+
+
+def _auth_update_user_status(uid, status):
+    if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
+        return None
+    def _q():
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET status=%s, updated_at=%s WHERE id=%s",
+                    (int(status), int(time.time() * 1000), uid))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    return _auth_db_call(_q)
+
+
+def _auth_reset_user_password(uid, password_hash):
+    if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
+        return None
+    def _q():
+        conn = _quest_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET password_hash=%s, updated_at=%s WHERE id=%s",
+                    (password_hash, int(time.time() * 1000), uid))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    return _auth_db_call(_q)
+
+
+def _auth_count_role(role):
+    """统计某角色的用户数（防锁死保护用）。失败返回 0。"""
+    if not (_PYMYSQL_OK and DATABASE_URL):
+        return 0
+    def _q():
+        conn = _quest_conn()
+        try:
+            with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM users WHERE role=%s AND status=1", (role,))
+                return cur.fetchone()["c"]
+        finally:
+            conn.close()
+    result = _auth_db_call(_q)
+    return int(result or 0)
 
 
 def _log_operation(user_id, username, action, target_type="", target_id="", detail=None, ip=""):
@@ -2996,6 +3105,106 @@ class Handler(BaseHTTPRequestHandler):
         ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
         return self._json(200, {"ok": ok})
 
+    # ---------- P1-A 用户管理（仅 admin 可调用） ----------
+
+    def _require_admin(self, data):
+        """仅管理员可操作（JWT role=admin 或旧 adminKey 兼容）。返回 None 或错误响应。"""
+        ident = self._auth_identity(data)
+        if ident and ident.get("role") == "admin":
+            return None
+        if not ADMIN_KEY and not ident:
+            return self._json(500, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
+        return self._json(403, {"ok": False, "error": "无权限：仅管理员可管理用户"})
+
+    def _handle_admin_users_list(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        try:
+            page = max(1, int(data.get("page") or 1))
+            size = min(50, max(1, int(data.get("size") or 10)))
+        except (TypeError, ValueError):
+            page, size = 1, 10
+        q = str(data.get("q") or "").strip()[:64]
+        result = _auth_list_users(page, size, q)
+        if result is None:
+            return self._json(500, {"ok": False, "error": "查询用户失败（数据库不可用）"})
+        return self._json(200, {"ok": True, "rows": result["rows"], "total": result["total"], "page": page, "size": size})
+
+    def _handle_admin_user_role(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        uid = str(data.get("id") or "").strip()
+        role = str(data.get("role") or "").strip()
+        if not uid:
+            return self._json(400, {"ok": False, "error": "缺少用户 id"})
+        if role not in ROLES:
+            return self._json(400, {"ok": False, "error": "角色无效：" + role})
+        target = _auth_get_user_by_id(uid)
+        if not target:
+            return self._json(404, {"ok": False, "error": "用户不存在"})
+        ident = self._auth_identity(data)
+        if ident and ident.get("id") and ident.get("id") == uid:
+            return self._json(400, {"ok": False, "error": "不能修改自己的角色（防止锁死后台）"})
+        # 最后一个 admin 保护：把 admin 降级前检查剩余 admin 数
+        if target.get("role") == "admin" and role != "admin":
+            if _auth_count_role("admin") <= 1:
+                return self._json(400, {"ok": False, "error": "系统至少保留一名管理员"})
+        if _auth_update_user_role(uid, role) is not True:
+            return self._json(500, {"ok": False, "error": "更新角色失败"})
+        self._log_op(data, "user_role_update", "user", uid, {"role": role, "username": target.get("username")})
+        return self._json(200, {"ok": True})
+
+    def _handle_admin_user_status(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        uid = str(data.get("id") or "").strip()
+        try:
+            status = 1 if int(data.get("status")) else 0
+        except (TypeError, ValueError):
+            return self._json(400, {"ok": False, "error": "状态无效（应为 0 或 1）"})
+        if not uid:
+            return self._json(400, {"ok": False, "error": "缺少用户 id"})
+        target = _auth_get_user_by_id(uid)
+        if not target:
+            return self._json(404, {"ok": False, "error": "用户不存在"})
+        ident = self._auth_identity(data)
+        if ident and ident.get("id") and ident.get("id") == uid and status == 0:
+            return self._json(400, {"ok": False, "error": "不能禁用自己（防止锁死后台）"})
+        if target.get("role") == "admin" and status == 0:
+            if _auth_count_role("admin") <= 1:
+                return self._json(400, {"ok": False, "error": "系统至少保留一名启用状态的管理员"})
+        if _auth_update_user_status(uid, status) is not True:
+            return self._json(500, {"ok": False, "error": "更新状态失败"})
+        self._log_op(data, "user_status_update", "user", uid,
+                     {"status": status, "username": target.get("username")})
+        return self._json(200, {"ok": True})
+
+    def _handle_admin_user_reset_password(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        uid = str(data.get("id") or "").strip()
+        if not uid:
+            return self._json(400, {"ok": False, "error": "缺少用户 id"})
+        target = _auth_get_user_by_id(uid)
+        if not target:
+            return self._json(404, {"ok": False, "error": "用户不存在"})
+        new_password = str(data.get("new_password") or "")
+        if new_password:
+            if len(new_password) < 6:
+                return self._json(400, {"ok": False, "error": "新密码至少 6 位"})
+        else:
+            new_password = secrets.token_urlsafe(9)  # 未指定则随机生成 12 位
+        new_hash = hash_password(new_password)
+        if _auth_reset_user_password(uid, new_hash) is not True:
+            return self._json(500, {"ok": False, "error": "重置密码失败"})
+        self._log_op(data, "user_password_reset", "user", uid,
+                     {"username": target.get("username")})
+        return self._json(200, {"ok": True, "new_password": new_password})
+
     def _handle_upload_presign(self, data):
         """为浏览器直传 B2 签发临时 PUT 授权（本服务不接收文件本体）。"""
         err = self._check_admin(data)
@@ -4366,6 +4575,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_auth_login(data)
             if path == "/api/auth/me":
                 return self._handle_auth_me(data)
+            if path == "/api/admin/users":
+                return self._handle_admin_users_list(data)
+            if path == "/api/admin/users/role":
+                return self._handle_admin_user_role(data)
+            if path == "/api/admin/users/status":
+                return self._handle_admin_user_status(data)
+            if path == "/api/admin/users/reset-password":
+                return self._handle_admin_user_reset_password(data)
             if path == "/api/square/submit":
                 return self._handle_square_submit(data)
             if path == "/api/square/delete":
