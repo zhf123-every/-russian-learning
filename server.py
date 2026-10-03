@@ -1352,7 +1352,9 @@ def _parse_mysql_url(url):
         "password": parsed.password,
         "database": parsed.path.lstrip("/"),
         "ssl": {"ssl_disabled": False},
-        "connect_timeout": 30,
+        "connect_timeout": 60,
+        "read_timeout": 60,
+        "write_timeout": 60,
         "charset": "utf8mb4",
     }
 
@@ -1544,7 +1546,7 @@ def _auth_init():
 def _auth_get_user_by_id(uid):
     if not (_PYMYSQL_OK and DATABASE_URL) or not uid:
         return None
-    try:
+    def _q():
         conn = _quest_conn()
         try:
             with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
@@ -1554,15 +1556,13 @@ def _auth_get_user_by_id(uid):
                 return cur.fetchone()
         finally:
             conn.close()
-    except Exception as e:
-        print("[auth] 查询用户失败：", e)
-        return None
+    return _auth_db_call(_q)
 
 
 def _auth_get_user_by_username(username):
     if not (_PYMYSQL_OK and DATABASE_URL) or not username:
         return None
-    try:
+    def _q():
         conn = _quest_conn()
         try:
             with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
@@ -1572,15 +1572,13 @@ def _auth_get_user_by_username(username):
                 return cur.fetchone()
         finally:
             conn.close()
-    except Exception as e:
-        print("[auth] 查询用户失败：", e)
-        return None
+    return _auth_db_call(_q)
 
 
 def _auth_count_users():
     if not (_PYMYSQL_OK and DATABASE_URL):
         return 0
-    try:
+    def _q():
         conn = _quest_conn()
         try:
             with conn.cursor() as cur:
@@ -1589,16 +1587,42 @@ def _auth_count_users():
                 return int(row[0] if isinstance(row, tuple) else row["c"])
         finally:
             conn.close()
+    result = _auth_db_call(_q)
+    return result if result is not None else 0
+
+
+def _auth_db_call(fn):
+    """执行一次 DB 操作；若因 TiDB 空闲连接回收/Serverless 休眠等原因报
+    『连接丢失/超时/无法连接』，自动重连并重试一次，避免偶发 500。
+    休眠唤醒场景：连接失败后先等待 15s（唤醒通常 10-60s）再重试。"""
+    try:
+        return fn()
     except Exception as e:
-        print("[auth] 统计用户失败：", e)
-        return 0
+        msg = str(e)
+        if ("Lost connection" in msg or "2013" in msg or "2006" in msg
+                or "timed out" in msg or "Broken pipe" in msg):
+            try:
+                return fn()
+            except Exception as e2:
+                print("[auth] 重连重试失败：", e2)
+                return None
+        if "Can't connect" in msg or "2003" in msg or "10060" in msg:
+            print("[auth] 连接失败，等待 15s 后重试（可能 TiDB 休眠唤醒中）……")
+            time.sleep(15)
+            try:
+                return fn()
+            except Exception as e2:
+                print("[auth] 唤醒重试仍失败：", e2)
+                return None
+        print("[auth] 数据库操作失败：", e)
+        return None
 
 
 def _log_operation(user_id, username, action, target_type="", target_id="", detail=None, ip=""):
     """写一条管理员操作日志（失败仅打印，不影响主流程）。"""
     if not (_PYMYSQL_OK and DATABASE_URL):
         return
-    try:
+    def _w():
         conn = _quest_conn()
         try:
             with conn.cursor() as cur:
@@ -1612,8 +1636,7 @@ def _log_operation(user_id, username, action, target_type="", target_id="", deta
             conn.commit()
         finally:
             conn.close()
-    except Exception as e:
-        print("[auth] 写操作日志失败：", e)
+    _auth_db_call(_w)
 
 
 
@@ -2298,7 +2321,7 @@ except Exception:
 _minio_client = None
 def _get_minio_client():
     global _minio_client
-    if _minIO_OK:
+    if _MINIO_OK:
         if _minio_client is None:
             endpoint = os.environ.get("MINIO_ENDPOINT")
             access_key = os.environ.get("MINIO_ACCESS_KEY")
@@ -2332,53 +2355,60 @@ def _square_list():
 
 
 def _square_submit(item):
-    conn = _square_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO square_items
-                (id, title, category, level, video_url, description, author,
-                 thumbnail, poster_url, views, tags, sentences, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    category = EXCLUDED.category,
-                    level = EXCLUDED.level,
-                    video_url = EXCLUDED.video_url,
-                    description = EXCLUDED.description,
-                    author = EXCLUDED.author,
-                    thumbnail = EXCLUDED.thumbnail,
-                    poster_url = EXCLUDED.poster_url,
-                    sentences = EXCLUDED.sentences,
-                    tags = EXCLUDED.tags
-            """, (
-                item.get("id", ""),
-                item.get("title", ""),
-                item.get("category", ""),
-                item.get("level", ""),
-                item.get("videoUrl", ""),
-                item.get("description", ""),
-                item.get("author", ""),
-                item.get("thumbnail", ""),
-                item.get("posterUrl", ""),
-                item.get("views", 0),
-                json.dumps(item.get("tags", []), ensure_ascii=False),
-                json.dumps(item.get("sentences", []), ensure_ascii=False),
-                item.get("createdAt", 0),
-            ))
-        conn.commit()
-    finally:
-        conn.close()
+    def _q():
+        conn = _square_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO square_items
+                    (id, title, category, level, video_url, description, author,
+                     thumbnail, poster_url, views, tags, sentences, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        title = VALUES(title),
+                        category = VALUES(category),
+                        level = VALUES(level),
+                        video_url = VALUES(video_url),
+                        description = VALUES(description),
+                        author = VALUES(author),
+                        thumbnail = VALUES(thumbnail),
+                        poster_url = VALUES(poster_url),
+                        sentences = VALUES(sentences),
+                        tags = VALUES(tags)
+                """, (
+                    item.get("id", ""),
+                    item.get("title", ""),
+                    item.get("category", ""),
+                    item.get("level", ""),
+                    item.get("videoUrl", ""),
+                    item.get("description", ""),
+                    item.get("author", ""),
+                    item.get("thumbnail", ""),
+                    item.get("posterUrl", ""),
+                    item.get("views", 0),
+                    json.dumps(item.get("tags", []), ensure_ascii=False),
+                    json.dumps(item.get("sentences", []), ensure_ascii=False),
+                    item.get("createdAt", 0),
+                ))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    # TiDB/MySQL 兼容重试（原 ON CONFLICT 为 PG 语法，TiDB 不支持，已改为 ON DUPLICATE KEY UPDATE）
+    _auth_db_call(_q)
 
 
 def _square_delete(item_id):
-    conn = _square_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM square_items WHERE id = %s", (item_id,))
-        conn.commit()
-    finally:
-        conn.close()
+    def _q():
+        conn = _square_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM square_items WHERE id = %s", (item_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    _auth_db_call(_q)
 
 
 COURSE_TAG_SYSTEM_PROMPT = """你是一个专业的中国俄语教育分类专家。你需要根据用户提供的【一级分类】和【OCR文本】，输出该内容对应的【年级】和【教材版本】。
@@ -2785,7 +2815,8 @@ class Handler(BaseHTTPRequestHandler):
         role = "admin" if _auth_count_users() == 0 else "learner"
         uid = "u_" + uuid.uuid4().hex[:20]
         now = int(time.time() * 1000)
-        try:
+
+        def _ins():
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
@@ -2797,9 +2828,10 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
             finally:
                 conn.close()
-        except Exception as e:
-            print("[auth] 注册失败：", e)
-            return self._json(500, {"ok": False, "error": "注册失败：" + str(e)})
+            return True
+
+        if _auth_db_call(_ins) is not True:
+            return self._json(500, {"ok": False, "error": "注册失败：数据库写入失败，请重试"})
         token = create_token(SECRET_KEY, uid, role, TOKEN_TTL)
         return self._json(200, {"ok": True, "token": token, "user": {
             "id": uid, "username": username, "role": role, "nickname": nickname or "",
@@ -2822,6 +2854,8 @@ class Handler(BaseHTTPRequestHandler):
         if row.get("status") != 1:
             return self._json(403, {"ok": False, "error": "账号已被禁用"})
         token = create_token(SECRET_KEY, row["id"], row["role"], TOKEN_TTL)
+        print("[auth] 登录成功: username=%s role=%s token_len=%s" % (
+            row["username"], row["role"], len(token) if token else 0))
         return self._json(200, {"ok": True, "token": token, "user": {
             "id": row["id"], "username": row["username"], "role": row["role"],
             "nickname": row.get("nickname") or "", "avatar": row.get("avatar") or "",
