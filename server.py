@@ -1424,6 +1424,18 @@ def _quest_conn():
     return pymysql.connect(**params)
 
 
+def _seg_execute(fn):
+    """执行 DB 操作；TiDB Serverless 偶发 Lost connection 时换新连接重试一次（只用于新语块接口）。"""
+    try:
+        return fn()
+    except Exception as e:
+        if _PYMYSQL_OK and isinstance(e, pymysql.err.OperationalError) and "Lost connection" in str(e):
+            print("[segments] 检测到数据库断连，换新连接重试一次")
+            time.sleep(0.5)
+            return fn()
+        raise
+
+
 def _quest_init():
     if not (_PYMYSQL_OK and DATABASE_URL):
         return
@@ -1440,6 +1452,10 @@ def _quest_init():
                 # P1-B：学习断点/完成标记上云（每用户×每课时×每模式 一条）
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_progress (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64) NOT NULL, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, mode VARCHAR(16) NOT NULL, seq_index INTEGER NOT NULL DEFAULT 0, unit_index INTEGER NOT NULL DEFAULT 0, difficulty VARCHAR(16) DEFAULT '', status TINYINT NOT NULL DEFAULT 0, ts BIGINT NOT NULL DEFAULT 0, UNIQUE KEY uk_learning_progress_user_unit_mode (user_id, unit_id, mode))")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_progress_user ON quest_learning_progress(user_id)")
+                # P0（语块化）：全局 LLM 缓存表（键=句子hash+难度，同句跨课时共享，命中不重复调 AI）+ 课时语块引用表
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_segment_cache (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, sentence TEXT NOT NULL, difficulty VARCHAR(16) NOT NULL, segments JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_cache_sent_diff (sentence_hash, difficulty))")
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_segments (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, cache_id VARCHAR(64) NOT NULL, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sort_order INT NOT NULL, text VARCHAR(512) NOT NULL, type VARCHAR(32) NOT NULL DEFAULT 'chunk', chinese VARCHAR(255) DEFAULT '', review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_seg (course_id, unit_id, sentence_hash, difficulty, sort_order), KEY idx_seg_unit (course_id, unit_id))")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_seg_cache_id ON sentence_segments(cache_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_statement_id ON quest_words(statement_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_lemma ON quest_words(lemma)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_pos ON quest_words(pos)")
@@ -3908,6 +3924,188 @@ class Handler(BaseHTTPRequestHandler):
         self._log_op(data, "user_detail_view", "user", uid, {"username": target.get("username")})
         return self._json(200, {"ok": True, "user": target, "orders": orders, "progress": progress, "stats": stats})
 
+    # ========== P0 语块化：sentence_segments 存取 + 全局 LLM 缓存 ==========
+    def _seg_get_cache(self, cur, sentence_hash, difficulty):
+        cur.execute("SELECT id, review_status FROM sentence_segment_cache WHERE sentence_hash=%s AND difficulty=%s", (sentence_hash, difficulty))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "review_status": row[1]}
+
+    def _handle_admin_segments_check(self, data):
+        """POST /api/admin/segments/check —— 批量查 LLM 缓存命中（前端先查，未命中才调 AI 切块）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        sentences = data.get("sentences") or []
+        if not isinstance(sentences, list) or not sentences:
+            return self._json(400, {"ok": False, "error": "缺少 sentences 列表"})
+        cached = []
+        def _q():
+            nonlocal cached
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    for s in sentences:
+                        h = str(s.get("sentence_hash") or "").strip()
+                        d = str(s.get("difficulty") or "medium").strip()
+                        if not h:
+                            continue
+                        row = self._seg_get_cache(cur, h, d)
+                        if row:
+                            cached.append({"sentence_hash": h, "difficulty": d,
+                                           "cache_id": row["id"], "review_status": row["review_status"]})
+                return cached
+            finally:
+                conn.close()
+        try:
+            _seg_execute(_q)
+        except Exception as e:
+            print("[segments] check 失败：", e)
+            return self._json(500, {"ok": False, "error": "缓存查询失败（数据库不可用）"})
+        return self._json(200, {"ok": True, "cached": cached})
+
+    def _handle_admin_segments_save(self, data):
+        """POST /api/admin/segments/save —— 写语块：cache 幂等（同句同难度只存一份，pending→ok 可升级）；
+        课时引用行同事务覆盖（先删该课时旧语块再插）。"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        items = data.get("items") or []
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        if not isinstance(items, list) or not items:
+            return self._json(400, {"ok": False, "error": "缺少 items 列表"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    # 同一事务：先清该课时旧语块（不影响全局 cache，可能被其他课时引用）
+                    cur.execute("DELETE FROM sentence_segments WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                    saved = 0
+                    now = int(time.time() * 1000)
+                    for it in items:
+                        h = str(it.get("sentence_hash") or "").strip()
+                        d = str(it.get("difficulty") or "medium").strip()
+                        segs = it.get("segments") or []
+                        if not h or not isinstance(segs, list) or not segs:
+                            continue
+                        status = str(it.get("review_status") or "ok").strip()
+                        if status not in ("ok", "pending"):
+                            status = "ok"
+                        # 1) 全局 cache 幂等：存在则复用；pending 且新结果为 ok 时升级
+                        row = self._seg_get_cache(cur, h, d)
+                        if row:
+                            cache_id = row["id"]
+                            if status == "ok" and row["review_status"] == "pending":
+                                cur.execute("UPDATE sentence_segment_cache SET review_status='ok' WHERE id=%s", (cache_id,))
+                        else:
+                            cache_id = "segc_" + hashlib.md5((h + "|" + d).encode("utf-8")).hexdigest()[:20]
+                            cur.execute("INSERT INTO sentence_segment_cache (id, sentence_hash, sentence, difficulty, segments, review_status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                        (cache_id, h, str(it.get("sentence") or ""), d,
+                                         json.dumps(segs, ensure_ascii=False), status, now))
+                        # 2) 课时引用行
+                        for s in segs:
+                            seg_id = "segs_" + hashlib.md5((course_id + "|" + unit_id + "|" + h + "|" + d + "|" + str(s.get("sort_order") or 0)).encode("utf-8")).hexdigest()[:20]
+                            cur.execute("INSERT INTO sentence_segments (id, course_id, unit_id, cache_id, sentence_hash, difficulty, sort_order, text, type, chinese, review_status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                        (seg_id, course_id, unit_id, cache_id, h, d, int(s.get("sort_order") or 0),
+                                         str(s.get("text") or ""), str(s.get("type") or "chunk"),
+                                         str(s.get("chinese") or ""), status, now))
+                        saved += 1
+                    conn.commit()
+                    return saved
+            finally:
+                conn.close()
+        try:
+            saved = _seg_execute(_q)
+            return self._json(200, {"ok": True, "saved": saved})
+        except Exception as e:
+            print("[segments] save 失败：", e)
+            return self._json(500, {"ok": False, "error": "保存语块失败（数据库不可用）"})
+
+    def _handle_admin_segments_delete(self, data):
+        """POST /api/admin/segments/delete —— 删课程/课时语块（同一事务内删除；全局 cache 保留）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    if unit_id:
+                        cur.execute("DELETE FROM sentence_segments WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                    else:
+                        cur.execute("DELETE FROM sentence_segments WHERE course_id=%s", (course_id,))
+                    deleted = cur.rowcount
+                    conn.commit()
+                    return deleted
+            finally:
+                conn.close()
+        try:
+            deleted = _seg_execute(_q)
+            return self._json(200, {"ok": True, "deleted": deleted})
+        except Exception as e:
+            print("[segments] delete 失败：", e)
+            return self._json(500, {"ok": False, "error": "删除语块失败（数据库不可用）"})
+
+    def _handle_admin_segments_pending(self, data):
+        """POST /api/admin/segments/pending —— 该课时 review_status='pending' 的句子（机械兜底待人工校对）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT DISTINCT sentence_hash, difficulty, review_status FROM sentence_segments WHERE course_id=%s AND unit_id=%s AND review_status='pending'", (course_id, unit_id))
+                    rows = cur.fetchall()
+                    return [{"sentence_hash": r[0], "difficulty": r[1], "review_status": r[2]} for r in rows]
+            finally:
+                conn.close()
+        try:
+            pending = _seg_execute(_q)
+        except Exception as e:
+            print("[segments] pending 查询失败：", e)
+            return self._json(500, {"ok": False, "error": "查询失败（数据库不可用）"})
+        return self._json(200, {"ok": True, "pending": pending})
+
+    def _handle_segments_read(self, params):
+        """GET /api/segments?course_id=&unit_id= —— 公开读课时语块（按句+难度分组，供连词成句练习页）"""
+        course_id = (params.get("course_id", [""])[0] or "").strip()
+        unit_id = (params.get("unit_id", [""])[0] or "").strip()
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT sentence_hash, difficulty, sort_order, text, type, chinese, review_status FROM sentence_segments WHERE course_id=%s AND unit_id=%s ORDER BY sentence_hash, difficulty, sort_order", (course_id, unit_id))
+                    return cur.fetchall()
+            finally:
+                conn.close()
+        try:
+            rows = _seg_execute(_q)
+        except Exception as e:
+            print("[segments] 读取失败：", e)
+            return self._json(500, {"ok": False, "error": "读取语块失败（数据库不可用）"})
+        groups = {}
+        for r in rows:
+            key = (r[0], r[1])
+            if key not in groups:
+                groups[key] = {"sentence_hash": r[0], "difficulty": r[1], "review_status": r[6], "segments": []}
+            groups[key]["segments"].append({"sort_order": r[2], "text": r[3], "type": r[4], "chinese": r[5]})
+        return self._json(200, {"ok": True, "items": list(groups.values())})
+
     def _handle_admin_user_status(self, data):
         err = self._require_admin(data)
         if err:
@@ -4211,6 +4409,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_square_list()
         if path == "/api/videos/list":
             return self._handle_videos_list()
+        if path == "/api/segments":
+            query = urllib.parse.urlparse(self.path).query
+            return self._handle_segments_read(urllib.parse.parse_qs(query))
         if path == "/api/reviews/list":
             return self._handle_reviews_list()
         if path == "/api/videos/resolve":
@@ -5367,6 +5568,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_user_reset_password(data)
             if path == "/api/admin/users/detail":
                 return self._handle_admin_user_detail(data)
+            if path == "/api/admin/segments/check":
+                return self._handle_admin_segments_check(data)
+            if path == "/api/admin/segments/save":
+                return self._handle_admin_segments_save(data)
+            if path == "/api/admin/segments/delete":
+                return self._handle_admin_segments_delete(data)
+            if path == "/api/admin/segments/pending":
+                return self._handle_admin_segments_pending(data)
             if path == "/api/learning/progress/save":
                 return self._handle_learning_progress_save(data)
             if path == "/api/learning/progress":
