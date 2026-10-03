@@ -1436,6 +1436,9 @@ def _quest_init():
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_words (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), `order` INTEGER NOT NULL, lemma VARCHAR(128) NOT NULL, form VARCHAR(128) NOT NULL, pos VARCHAR(32) NOT NULL, grammatical_case VARCHAR(32), number VARCHAR(16), gender VARCHAR(16), person INTEGER, tense VARCHAR(32), aspect VARCHAR(32), stress_position INTEGER, syntactic_role VARCHAR(64), is_fixed_position BOOLEAN NOT NULL DEFAULT FALSE, chunk_type VARCHAR(32) NOT NULL DEFAULT 'single_word', created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_acceptable_answers (id VARCHAR(64) PRIMARY KEY, statement_id VARCHAR(64) NOT NULL REFERENCES quest_statements(id), word_order JSON NOT NULL, word_variants JSON NOT NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE, note TEXT, created_at BIGINT DEFAULT 0)")
                 cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_records (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64), course_id VARCHAR(64) NOT NULL REFERENCES quest_courses(id), completion_time INTEGER NOT NULL DEFAULT 0, correct_count INTEGER NOT NULL DEFAULT 0, total_count INTEGER NOT NULL DEFAULT 0, max_combo INTEGER NOT NULL DEFAULT 0, rating VARCHAR(8) NOT NULL DEFAULT 'C', created_at BIGINT DEFAULT 0)")
+                # P1-B：学习断点/完成标记上云（每用户×每课时×每模式 一条）
+                cur.execute("CREATE TABLE IF NOT EXISTS quest_learning_progress (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64) NOT NULL, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, mode VARCHAR(16) NOT NULL, seq_index INTEGER NOT NULL DEFAULT 0, unit_index INTEGER NOT NULL DEFAULT 0, difficulty VARCHAR(16) DEFAULT '', status TINYINT NOT NULL DEFAULT 0, ts BIGINT NOT NULL DEFAULT 0, UNIQUE KEY uk_learning_progress_user_unit_mode (user_id, unit_id, mode))")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_progress_user ON quest_learning_progress(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_statement_id ON quest_words(statement_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_lemma ON quest_words(lemma)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_quest_words_pos ON quest_words(pos)")
@@ -2992,7 +2995,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _handle_course_complete(self, data):
-        """保存课程练习记录"""
+        """保存课程练习记录（P1-B：已登录用户记录 user_id，匿名保持 ''）"""
         try:
             course_id = (data.get("course_id") or "").strip()
             if not course_id:
@@ -3002,23 +3005,100 @@ class Handler(BaseHTTPRequestHandler):
             total_count = int(data.get("total_count") or 0)
             max_combo = int(data.get("max_combo") or 0)
             rating = (data.get("rating") or "C").strip()
+            ident = self._auth_identity(data)
+            user_id = (ident or {}).get("id") or ""
             record_id = uuid.uuid4().hex[:24]
             created_at = int(time.time() * 1000)
 
-            conn = _quest_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO quest_learning_records (id, user_id, course_id, completion_time, correct_count, total_count, max_combo, rating, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (record_id, "", course_id, completion_time, correct_count, total_count, max_combo, rating, created_at)
-                    )
-                conn.commit()
-            finally:
-                conn.close()
+            def _save():
+                conn = _quest_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO quest_learning_records (id, user_id, course_id, completion_time, correct_count, total_count, max_combo, rating, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (record_id, user_id, course_id, completion_time, correct_count, total_count, max_combo, rating, created_at)
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+                return True
+
+            if _auth_db_call(_save) is not True:
+                return self._json(500, {"ok": False, "error": "保存失败：数据库错误，请重试"})
             return self._json(200, {"ok": True, "data": {"id": record_id}})
         except Exception as e:
             print("[quest] 保存练习记录失败:", e)
             return self._json(500, {"ok": False, "error": str(e)})
+
+    def _handle_learning_progress_save(self, data):
+        """POST /api/learning/progress/save —— 登录用户批量上报学习断点/完成标记（UPSERT）"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "未登录，无法同步学习进度"})
+        user_id = ident["id"]
+        items = data.get("items") or []
+        if not isinstance(items, list) or not items:
+            return self._json(400, {"ok": False, "error": "缺少 items"})
+        if len(items) > 100:
+            return self._json(400, {"ok": False, "error": "单次最多 100 条"})
+
+        def _save():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    for it in items:
+                        unit_id = (it.get("unit_id") or "").strip()
+                        mode = (it.get("mode") or "").strip()
+                        course_id = (it.get("course_id") or "").strip()
+                        if not unit_id or not mode:
+                            continue
+                        seq_index = int(it.get("seq_index") or 0)
+                        unit_index = int(it.get("unit_index") or 0)
+                        difficulty = (it.get("difficulty") or "")[:16]
+                        status = 1 if it.get("status") else 0
+                        ts = int(it.get("ts") or 0) or int(time.time() * 1000)
+                        cur.execute(
+                            "INSERT INTO quest_learning_progress (id, user_id, course_id, unit_id, mode, seq_index, unit_index, difficulty, status, ts) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                            "ON DUPLICATE KEY UPDATE seq_index=VALUES(seq_index), unit_index=VALUES(unit_index), difficulty=VALUES(difficulty), status=VALUES(status), ts=VALUES(ts)",
+                            (uuid.uuid4().hex[:24], user_id, course_id, unit_id, mode,
+                             seq_index, unit_index, difficulty, status, ts))
+                conn.commit()
+            finally:
+                conn.close()
+            return True
+
+        if _auth_db_call(_save) is not True:
+            return self._json(500, {"ok": False, "error": "同步失败：数据库写入失败，请重试"})
+        return self._json(200, {"ok": True, "count": len(items)})
+
+    def _handle_learning_progress_get(self, data):
+        """POST /api/learning/progress —— 登录用户拉取自己的学习断点/完成标记（可按 course_id 过滤）"""
+        ident = self._auth_identity(data)
+        if not ident or not ident.get("id"):
+            return self._json(401, {"ok": False, "error": "未登录，无法读取学习进度"})
+        user_id = ident["id"]
+        course_id = (data.get("course_id") or "").strip()
+
+        def _load():
+            conn = _quest_conn()
+            try:
+                with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                    if course_id:
+                        cur.execute(
+                            "SELECT unit_id, mode, seq_index, unit_index, difficulty, status, ts FROM quest_learning_progress WHERE user_id=%s AND course_id=%s",
+                            (user_id, course_id))
+                    else:
+                        cur.execute(
+                            "SELECT unit_id, mode, seq_index, unit_index, difficulty, status, ts FROM quest_learning_progress WHERE user_id=%s",
+                            (user_id,))
+                    return cur.fetchall() or []
+            finally:
+                conn.close()
+
+        rows = _auth_db_call(_load)
+        if rows is None:
+            return self._json(500, {"ok": False, "error": "读取失败：数据库错误，请重试"})
+        return self._json(200, {"ok": True, "items": rows})
 
     def _handle_answer_submit(self, data):
         """连词成句判题：接收用户输入，返回结构化判题结果"""
@@ -4583,6 +4663,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_user_status(data)
             if path == "/api/admin/users/reset-password":
                 return self._handle_admin_user_reset_password(data)
+            if path == "/api/learning/progress/save":
+                return self._handle_learning_progress_save(data)
+            if path == "/api/learning/progress":
+                return self._handle_learning_progress_get(data)
             if path == "/api/square/submit":
                 return self._handle_square_submit(data)
             if path == "/api/square/delete":
