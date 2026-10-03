@@ -1284,6 +1284,10 @@ def call_llm(system_prompt, user_prompt="", json_mode=True):
     messages = [{"role": "system", "content": system_prompt}]
     if user_prompt:
         messages.append({"role": "user", "content": user_prompt})
+    else:
+        # 兼容修复：智谱/DeepSeek 等接口要求 messages 至少包含一条 user 消息，
+        # 只有 system 消息（如 AI 引导语）会返回 1214 messages 参数非法（与 /api/ai 同款修复）
+        messages.append({"role": "user", "content": "请开始。"})
     try:
         content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, messages)
     except Exception as e:
