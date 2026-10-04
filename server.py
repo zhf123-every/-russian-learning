@@ -4131,6 +4131,86 @@ class Handler(BaseHTTPRequestHandler):
             print("[segments] save 失败：", e)
             return self._json(500, {"ok": False, "error": "保存语块失败（数据库不可用）"})
 
+    def _handle_admin_segments_update(self, data):
+        """POST /api/admin/segments/update —— P4 人工编辑语块（单句单档整组覆盖）：
+        - 保存前硬校验：按 sort_order 拼接必须逐字符等于基准原句（俄语化），否则 400 并回显拼接结果
+        - 校验通过 → 同一事务：覆盖该 (句,档) 全部引用行 + 同步覆盖全局 cache.segments
+          （同步 cache：补跑幂等命中返回编辑后语块，人工修改不会被重跑冲掉；同句跨课时切分全局一致）
+        - review_status 置 'ok'（人工确认过），translation 不动
+        - 数据库 0 改动（全部写现有列）"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        h = str(data.get("sentence_hash") or "").strip()
+        d = str(data.get("difficulty") or "medium").strip()
+        segs = data.get("segments") or []
+        if not course_id or not unit_id or not h:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id / sentence_hash"})
+        if not isinstance(segs, list) or not segs:
+            return self._json(400, {"ok": False, "error": "缺少 segments 列表"})
+        try:
+            ordered = sorted(segs, key=lambda s: int(s.get("sort_order") or 0))
+            joined = " ".join(str(s.get("text") or "").strip() for s in ordered if str(s.get("text") or "").strip())
+        except Exception:
+            return self._json(400, {"ok": False, "error": "segments 结构无效"})
+        if not joined:
+            return self._json(400, {"ok": False, "error": "语块文本为空"})
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    # 1) 基准原句：优先全局 cache.sentence（俄语化原句）；无 cache 时用现有引用行拼接（编辑前==原句）
+                    cache_row = self._seg_get_cache(cur, h, d, with_content=True)
+                    baseline = (cache_row or {}).get("sentence") or ""
+                    if not baseline:
+                        cur.execute("SELECT text FROM sentence_segments WHERE course_id=%s AND unit_id=%s AND sentence_hash=%s AND difficulty=%s AND text<>'' AND type<>'pending_placeholder' ORDER BY sort_order",
+                                    (course_id, unit_id, h, d))
+                        baseline = " ".join(r[0] for r in cur.fetchall())
+                    baseline = (baseline or "").strip()
+                    if not baseline:
+                        return ("NO_BASELINE",)
+                    # 2) 硬校验：拼接 == 基准原句（逐字符）
+                    if joined != baseline:
+                        return ("MISMATCH", joined, baseline)
+                    # 3) 覆盖引用行 + 同步覆盖全局 cache（同一事务）
+                    now = int(time.time() * 1000)
+                    cache_id = None
+                    if cache_row and cache_row.get("id"):
+                        cache_id = cache_row["id"]
+                    else:
+                        cache_id = "segc_" + hashlib.md5((h + "|" + d).encode("utf-8")).hexdigest()[:20]
+                    cur.execute(
+                        "INSERT INTO sentence_segment_cache (id, sentence_hash, sentence, difficulty, segments, review_status, translation, created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,'ok','',%s) "
+                        "ON DUPLICATE KEY UPDATE segments=VALUES(segments), review_status='ok', "
+                        "translation=IF(translation='', '', translation)",
+                        (cache_id, h, baseline, d, json.dumps(ordered, ensure_ascii=False), now))
+                    cur.execute("DELETE FROM sentence_segments WHERE course_id=%s AND unit_id=%s AND sentence_hash=%s AND difficulty=%s",
+                                (course_id, unit_id, h, d))
+                    for s in ordered:
+                        seg_id = "segs_" + hashlib.md5((course_id + "|" + unit_id + "|" + h + "|" + d + "|" + str(s.get("sort_order") or 0)).encode("utf-8")).hexdigest()[:20]
+                        cur.execute(
+                            "INSERT INTO sentence_segments (id, course_id, unit_id, cache_id, sentence_hash, difficulty, sort_order, text, type, chinese, review_status, created_at) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ok',%s)",
+                            (seg_id, course_id, unit_id, cache_id, h, d, int(s.get("sort_order") or 0),
+                             str(s.get("text") or ""), str(s.get("type") or "chunk"), str(s.get("chinese") or ""), now))
+                    conn.commit()
+                    return ("OK", len(ordered))
+            finally:
+                conn.close()
+        try:
+            r = _seg_execute(_q)
+            if r[0] == "NO_BASELINE":
+                return self._json(400, {"ok": False, "error": "找不到基准原句（该句尚无语块，请先补跑生成）"})
+            if r[0] == "MISMATCH":
+                return self._json(400, {"ok": False, "error": "拼接校验失败：编辑后语块必须逐字符等于原句", "joined": r[1], "baseline": r[2]})
+            return self._json(200, {"ok": True, "updated": r[1]})
+        except Exception as e:
+            print("[segments] update 失败：", e)
+            return self._json(500, {"ok": False, "error": "更新语块失败（数据库不可用）"})
+
     def _handle_admin_segments_delete(self, data):
         """POST /api/admin/segments/delete —— 删课程/课时语块（同一事务内删除；全局 cache 保留）"""
         err = self._require_admin(data)
@@ -5836,6 +5916,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_pending(data)
             if path == "/api/admin/segments/llm-segment":
                 return self._handle_admin_segments_llm_segment(data)
+            if path == "/api/admin/segments/update":
+                return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":
                 return self._handle_learning_progress_save(data)
             if path == "/api/learning/progress":
