@@ -4325,6 +4325,46 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return sorted(groups, key=lambda g: g["indexes"][0])
 
+    def _seg_repair_missing_indexes(self, groups, n):
+        """漏索引自动修复：结构合法但并集缺索引时，把缺失索引并入相邻组（优先前组末尾，其次后组开头），保持组内连续。
+        只处理\u201c漏\u201d——其他非法（重复/越界/组内不连续）返回 None，交回原 fallback 链路。"""
+        if not isinstance(groups, list) or not groups:
+            return None
+        seen = set()
+        for g in groups:
+            idx = g.get("indexes")
+            if not isinstance(idx, list) or not idx:
+                return None
+            prev = -1
+            for i in idx:
+                if not isinstance(i, int) or isinstance(i, bool) or i < 0 or i >= n or i in seen:
+                    return None
+                if prev >= 0 and i != prev + 1:
+                    return None  # 组内不连续——非\u201c漏\u201d，不修
+                seen.add(i)
+                prev = i
+        miss = sorted(set(range(n)) - seen)
+        if not miss:
+            return groups
+        for i in miss:
+            fixed = False
+            for g in groups:  # 优先并入前组末尾（语义更完整）
+                gi = g["indexes"]
+                if gi[-1] + 1 == i:
+                    gi.append(i)
+                    fixed = True
+                    break
+            if not fixed:
+                for g in groups:  # 其次插到后组开头
+                    gi = g["indexes"]
+                    if gi[0] - 1 == i:
+                        gi.insert(0, i)
+                        fixed = True
+                        break
+            if not fixed:
+                return None
+        return groups
+
     def _handle_admin_segments_llm_segment(self, data):
         """POST /api/admin/segments/llm-segment —— AI 切块（后端持 key，前端只传数据）。
         幂等：cache ok → 直接返回缓存（文本组，cached）；cache generating → {pending:true}；
@@ -4373,7 +4413,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
         groups = obj.get("segments")
         translation = str(obj.get("translation") or "").strip()
-        groups = self._seg_verify_indexes(groups, n)
+        raw_groups = groups
+        groups = self._seg_verify_indexes(raw_groups, n)
+        if groups is None:
+            # 自动修复：AI 偶发漏索引 → 并入相邻组后重验；仍非法才 fallback
+            repaired = self._seg_repair_missing_indexes(raw_groups, n)
+            if repaired is not None:
+                re_checked = self._seg_verify_indexes(repaired, n)
+                if re_checked is not None:
+                    print("[segments] llm-segment 漏索引自动修复成功 tokens=%d 原始返回=%s" % (n, json.dumps(obj, ensure_ascii=False)[:400]))
+                    groups = re_checked
+                else:
+                    groups = None
+            else:
+                groups = None
         if groups is None:
             print("[segments] llm-segment 索引校验失败 tokens=%d 原始返回=%s" % (n, json.dumps(obj, ensure_ascii=False)[:800]))
             return self._json(200, {"ok": False, "fallback": True, "reason": "indexes_invalid", "raw": json.dumps(obj, ensure_ascii=False)[:500]})
