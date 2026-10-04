@@ -4368,12 +4368,13 @@ class Handler(BaseHTTPRequestHandler):
         # 未命中 / cache pending：调 LLM
         obj = call_llm(self._seg_build_prompt(tokens, difficulty), "", json_mode=True)
         if not obj:
-            return self._json(200, {"ok": False, "fallback": True})
+            return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
         groups = obj.get("segments")
         translation = str(obj.get("translation") or "").strip()
         groups = self._seg_verify_indexes(groups, n)
         if groups is None:
-            return self._json(200, {"ok": False, "fallback": True})
+            print("[segments] llm-segment 索引校验失败 tokens=%d 原始返回=%s" % (n, json.dumps(obj, ensure_ascii=False)[:800]))
+            return self._json(200, {"ok": False, "fallback": True, "reason": "indexes_invalid", "raw": json.dumps(obj, ensure_ascii=False)[:500]})
         # 拼接校验（机械截取 == russian_text）
         try:
             full = " ".join(" ".join(tokens[i] for i in g["indexes"]) for g in groups)
@@ -4381,7 +4382,7 @@ class Handler(BaseHTTPRequestHandler):
             full = ""
         if full != russian_text:
             print("[segments] llm-segment 拼接校验失败：", repr(full), "!=", repr(russian_text))
-            return self._json(200, {"ok": False, "fallback": True})
+            return self._json(200, {"ok": False, "fallback": True, "reason": "concat_mismatch", "full": repr(full)[:300], "expected": repr(russian_text)[:300]})
         # 写全局 cache（ok；translation 非空才覆盖）
         now = int(time.time() * 1000)
         cache_id = "segc_" + hashlib.md5((sentence_hash + "|" + difficulty).encode("utf-8")).hexdigest()[:20]
