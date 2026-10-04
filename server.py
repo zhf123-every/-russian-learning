@@ -4287,11 +4287,13 @@ class Handler(BaseHTTPRequestHandler):
         lines.append("1. 只能引用上面的编号；每组 indexes 必须连续递增（如 [0,1]、[2]、[3,4]）。")
         lines.append("2. 所有组并集必须恰好覆盖全部编号：不重、不漏、不跳号。")
         if difficulty == "easy":
-            lines.append("3. 难度【初级】：允许单字成组（孤词可独立成组）；仅固定搭配/专名必须整组（如 Чистые пруды）。")
+            lines.append("3. 难度【初级·零件模式】：鼓励拆到最小可独立成组的教学零件——代词、名词、动词变位、副词、形容词等【允许单字成组】；")
+            lines.append("   只要不是固定搭配或专名（如 Чистые пруды / в университете / на втором этаже），能拆就拆，不要为了完整合并成多词短语。")
         elif difficulty == "hard":
             lines.append("3. 难度【高级】：整句作为一组（该档正常不请求 AI）。")
         else:
-            lines.append("3. 难度【中级】：禁止单字成组，最小单元是短语/语块（主谓短语、介词短语、固定搭配）。")
+            lines.append("3. 难度【中级·语块模式】：【禁止任何单字成组】！最小单元必须是 2 词以上的短语/语块（主谓短语、介词短语、固定搭配、从句片段）；")
+            lines.append("   单字必须并入相邻语块，不允许孤词独立成组。")
         lines.append("4. 固定搭配/专名必须整组：в университете / на втором этаже 等，禁止拆碎。")
         lines.append("5. 标点必须附着在所在组的最后一个 token 上，禁止标点单独成组。")
         lines.append("6. 每组给出 type（word/phrase/verb/prep_phrase/fixed/clause）与 chinese（只译该语块本身）。")
