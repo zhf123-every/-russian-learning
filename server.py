@@ -1518,6 +1518,10 @@ def _quest_init():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_seg_cache_id ON sentence_segments(cache_id)")
                 # P4（句乐部式滚雪球）：槽位/增量规划缓存表（AI 只出增量词序列，电脑拼 target，零拼写错误）
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_plans (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, plan JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_plan (sentence_hash, difficulty))")
+                # P4 幂等迁移：plan 缓存加词池指纹列（变体组依赖词池；换词池后缓存失效重建）
+                cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE sentence_slot_plans ADD COLUMN pool_fp VARCHAR(16) DEFAULT ''")
                 # P1 幂等迁移：cache 加 translation 列；sentence_segments.cache_id 允许 NULL（占位行用）
                 cur.execute("SHOW COLUMNS FROM sentence_segment_cache LIKE 'translation'")
                 if not cur.fetchone():
@@ -4467,7 +4471,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": True, "segments": groups, "translation": translation})
 
     # ---------- P4：句乐部式滚雪球规划（AI 出增量词序列，电脑拼 target） ----------
-    def _slot_build_prompt(self, tokens, difficulty, russian_text):
+    def _slot_build_prompt(self, tokens, difficulty, russian_text, pool=None):
         lines = [
             "你是俄语教学\u201c句乐部式滚雪球\u201d规划师。你只输出\u201c增量词/块序列\u201d，【绝对禁止输出完整俄语句子】——完整句子由系统逐块拼接，你只负责决定每一步\u201c新加什么\u201d。只输出 JSON，不要任何解释或 markdown 包裹。",
             "",
@@ -4478,6 +4482,19 @@ class Handler(BaseHTTPRequestHandler):
         ]
         for i, t in enumerate(tokens):
             lines.append("%d: %s" % (i, t))
+        if isinstance(pool, dict):
+            lines.append("")
+            lines.append("【本课变体词池】（【变体组的 add 只能从这里取】，禁止新造词；骨架组仍用目标句的原文词）：")
+            for key, zh_label in (("negation", "否定"), ("time", "时间"), ("predicates", "谓语"),
+                                  ("objects", "补语"), ("evaluation", "评价形容词"), ("degree", "程度副词"),
+                                  ("preposition", "介词短语"), ("connector", "连词"), ("place", "地点")):
+                items = pool.get(key)
+                if isinstance(items, list) and items:
+                    shown = " / ".join(
+                        ("%s(%s)" % (str(it.get("ru") or it.get("word") or "").strip(), str(it.get("zh") or "").strip()))
+                        for it in items if isinstance(it, dict) and str(it.get("ru") or it.get("word") or "").strip())
+                    if shown:
+                        lines.append("  [%s] %s" % (zh_label, shown))
         lines.append("")
         lines.append("【输出格式】groups = 教学组序列，每组 = 一条滚雪球路径：")
         lines.append('{"groups":[{"title":"骨架","steps":[{"add":"Это","zh":"这","type":"pronoun"},{"add":"мой","zh":"我的","type":"adj"}]}],"translation":"整句中文"}')
@@ -4551,6 +4568,15 @@ class Handler(BaseHTTPRequestHandler):
         russian_text = str(data.get("russian_text") or "").strip()
         tokens = data.get("tokens") or []
         difficulty = str(data.get("difficulty") or "medium").strip()
+        pool = data.get("pool")
+        if not isinstance(pool, dict):
+            pool = None
+        pool_fp = ""
+        if pool:
+            try:
+                pool_fp = hashlib.md5(json.dumps(pool, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+            except Exception:
+                pool_fp = ""
         if not sentence_hash or not russian_text or not isinstance(tokens, list) or not tokens:
             return self._json(400, {"ok": False, "error": "缺少 sentence_hash / russian_text / tokens"})
         if difficulty not in ("easy", "medium", "hard"):
@@ -4559,12 +4585,12 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT plan, review_status FROM sentence_slot_plans WHERE sentence_hash=%s AND difficulty=%s",
+                    cur.execute("SELECT plan, review_status, COALESCE(pool_fp,'') FROM sentence_slot_plans WHERE sentence_hash=%s AND difficulty=%s",
                                 (sentence_hash, difficulty))
                     row = cur.fetchone()
                     if row:
-                        return {"plan": row[0], "status": row[1]}
-                    return {"plan": None, "status": None}
+                        return {"plan": row[0], "status": row[1], "pool_fp": row[2]}
+                    return {"plan": None, "status": None, "pool_fp": ""}
             finally:
                 conn.close()
         try:
@@ -4572,13 +4598,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print("[slots] plan 缓存查询失败：", e)
             return self._json(500, {"ok": False, "error": "缓存查询失败（数据库不可用）"})
-        if r.get("plan"):
+        if r.get("plan") and r.get("pool_fp") == pool_fp:
             try:
                 cached = json.loads(r["plan"])
                 return self._json(200, {"ok": True, "cached": True, "groups": cached.get("groups"), "translation": cached.get("translation") or ""})
             except Exception:
                 pass
-        obj = call_llm(self._slot_build_prompt(tokens, difficulty, russian_text), "", json_mode=True)
+        obj = call_llm(self._slot_build_prompt(tokens, difficulty, russian_text, pool), "", json_mode=True)
         if not obj:
             return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
         built, reason = self._slot_verify_and_build(obj, russian_text, tokens, difficulty)
@@ -4593,10 +4619,10 @@ class Handler(BaseHTTPRequestHandler):
                 with conn.cursor() as cur:
                     pid = "slot_" + hashlib.md5((sentence_hash + "|" + difficulty).encode("utf-8")).hexdigest()[:20]
                     cur.execute(
-                        "INSERT INTO sentence_slot_plans (id, sentence_hash, difficulty, sentence, plan, review_status, created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,'ok',%s) "
-                        "ON DUPLICATE KEY UPDATE plan=VALUES(plan), review_status='ok'",
-                        (pid, sentence_hash, difficulty, russian_text, plan_json, int(time.time() * 1000)))
+                        "INSERT INTO sentence_slot_plans (id, sentence_hash, difficulty, sentence, plan, review_status, created_at, pool_fp) "
+                        "VALUES (%s,%s,%s,%s,%s,'ok',%s,%s) "
+                        "ON DUPLICATE KEY UPDATE plan=VALUES(plan), review_status='ok', pool_fp=VALUES(pool_fp)",
+                        (pid, sentence_hash, difficulty, russian_text, plan_json, int(time.time() * 1000), pool_fp))
                     conn.commit()
             finally:
                 conn.close()
@@ -4605,6 +4631,71 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print("[slots] plan 写缓存失败：", e)
         return self._json(200, {"ok": True, "groups": built, "translation": translation})
+
+    # ---------- P4：课程级变体词池（9 类各 2-4 词，整课生成一次，全课变体复用） ----------
+    _POOL_KEYS = (("negation", "否定词"), ("time", "时间词"), ("predicates", "谓语（变位形式）"),
+                  ("objects", "补语/不定式短语"), ("evaluation", "评价形容词"), ("degree", "程度副词"),
+                  ("preposition", "介词短语"), ("connector", "连词"), ("place", "地点词"))
+    def _pool_build_prompt(self, sentences):
+        lines = [
+            "你是俄语教学词池设计师。为下面这一课的句子设计【课程级变体词池】——句乐部式教学会在全课反复使用同一批变体词。只输出 JSON，不要解释。",
+            "",
+            "【本课句子】（用于判断教学阶段与难度，决定词池词汇量）：",
+        ]
+        for i, s in enumerate(sentences[:12]):
+            lines.append("%d. %s" % (i + 1, str(s.get("ru") or s.get("russian") or s.get("text") or "").strip()))
+        lines.append("")
+        lines.append("【输出格式】9 类词池，每类 2-4 个词（词条= {ru: 俄语可用形式, zh: 中文}）：")
+        lines.append('{"negation":[{"ru":"не","zh":"不"}],"time":[{"ru":"сейчас","zh":"现在"}],"predicates":[{"ru":"хочу","zh":"想"}],"objects":[{"ru":"делать это","zh":"做这个"}],"evaluation":[{"ru":"важно","zh":"重要"}],"degree":[{"ru":"очень","zh":"非常"}],"preposition":[{"ru":"для меня","zh":"对我来说"}],"connector":[{"ru":"поэтому","zh":"所以"}],"place":[{"ru":"здесь","zh":"这里"}]}')
+        lines.append("")
+        lines.append("【铁律】")
+        lines.append("1. 9 类都要有，每类 2-4 个词，不允许空类。")
+        lines.append("2. 词必须是【可用形式】：谓语用变位形式（хочу / должен / нужно / люблю）、名词补语用正确格（еду / книгу）。")
+        lines.append("3. 难度贴合本课句子：初级课给高频简单词（сейчас / сегодня / здесь），不要给冷僻词。")
+        lines.append("4. 词与词之间教学上是同一难度梯队，不要混入太难的词。")
+        lines.append("5. zh 用现代中文，逐词对应，不要整句翻译。")
+        lines.append("6. 禁止编造俄语词形；拿不准就留空该条，但不许整类为空。")
+        return "\n".join(lines)
+
+    def _pool_verify(self, obj):
+        """校验词池：9 类全是非空数组、词条含 ru；返回规范后的 pool 或 (None, reason)。"""
+        if not isinstance(obj, dict):
+            return None, "not_dict"
+        pool = {}
+        for key, label in self._POOL_KEYS:
+            items = obj.get(key)
+            if not isinstance(items, list):
+                return None, "missing_%s" % key
+            cleaned = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                ru = str(it.get("ru") or it.get("word") or "").strip()
+                if not ru:
+                    continue
+                cleaned.append({"ru": ru, "zh": str(it.get("zh") or "").strip()})
+            if not cleaned:
+                return None, "empty_%s" % key
+            pool[key] = cleaned[:6]
+        return pool, None
+
+    def _handle_admin_segments_pool(self, data):
+        """POST /api/admin/segments/pool —— 课程级变体词池生成（整课一次；前端存回课时 variantPool）。
+        入参: {unit_id?, sentences:[{ru,zh}]}；AI 出 9 类词池；弱校验非空。"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        sentences = data.get("sentences") or []
+        if not isinstance(sentences, list) or not sentences:
+            return self._json(400, {"ok": False, "error": "缺少 sentences（本课句子列表）"})
+        obj = call_llm(self._pool_build_prompt(sentences), "", json_mode=True)
+        if not obj:
+            return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
+        pool, reason = self._pool_verify(obj)
+        if pool is None:
+            print("[slots] pool 校验失败 reason=%s 原始返回=%s" % (reason, json.dumps(obj, ensure_ascii=False)[:500]))
+            return self._json(200, {"ok": False, "fallback": True, "reason": reason, "raw": json.dumps(obj, ensure_ascii=False)[:400]})
+        return self._json(200, {"ok": True, "pool": pool})
 
     def _handle_segments_read(self, params):
         """GET /api/segments?course_id=&unit_id= —— 公开读课时语块（按句+难度分组，供连词成句练习页）。
@@ -6116,6 +6207,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_llm_segment(data)
             if path == "/api/admin/segments/plan":
                 return self._handle_admin_segments_plan(data)
+            if path == "/api/admin/segments/pool":
+                return self._handle_admin_segments_pool(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":
