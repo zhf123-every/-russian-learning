@@ -1516,6 +1516,8 @@ def _quest_init():
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_segment_cache (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, sentence TEXT NOT NULL, difficulty VARCHAR(16) NOT NULL, segments JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', translation VARCHAR(512) DEFAULT '', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_cache_sent_diff (sentence_hash, difficulty))")
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_segments (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, cache_id VARCHAR(64) NULL, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sort_order INT NOT NULL, text VARCHAR(512) NOT NULL, type VARCHAR(32) NOT NULL DEFAULT 'chunk', chinese VARCHAR(255) DEFAULT '', review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_seg (course_id, unit_id, sentence_hash, difficulty, sort_order), KEY idx_seg_unit (course_id, unit_id))")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_seg_cache_id ON sentence_segments(cache_id)")
+                # P4（句乐部式滚雪球）：槽位/增量规划缓存表（AI 只出增量词序列，电脑拼 target，零拼写错误）
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_plans (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, plan JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_plan (sentence_hash, difficulty))")
                 # P1 幂等迁移：cache 加 translation 列；sentence_segments.cache_id 允许 NULL（占位行用）
                 cur.execute("SHOW COLUMNS FROM sentence_segment_cache LIKE 'translation'")
                 if not cur.fetchone():
@@ -4464,6 +4466,140 @@ class Handler(BaseHTTPRequestHandler):
         # 返回索引组（前端机械截取 + verifySegments 双保险）
         return self._json(200, {"ok": True, "segments": groups, "translation": translation})
 
+    # ---------- P4：句乐部式滚雪球规划（AI 出增量词序列，电脑拼 target） ----------
+    def _slot_build_prompt(self, tokens, difficulty, russian_text):
+        lines = [
+            "你是俄语教学\u201c句乐部式滚雪球\u201d规划师。你只输出\u201c增量词/块序列\u201d，【绝对禁止输出完整俄语句子】——完整句子由系统逐块拼接，你只负责决定每一步\u201c新加什么\u201d。只输出 JSON，不要任何解释或 markdown 包裹。",
+            "",
+            "【目标句】（已俄语化，系统最终校验拼接结果必须逐字符等于它）：",
+            russian_text,
+            "",
+            "【token 列表】（编号从 0 开始，仅作参考，你不必使用全部编号）：",
+        ]
+        for i, t in enumerate(tokens):
+            lines.append("%d: %s" % (i, t))
+        lines.append("")
+        lines.append("【输出格式】groups = 教学组序列，每组 = 一条滚雪球路径：")
+        lines.append('{"groups":[{"title":"骨架","steps":[{"add":"Это","zh":"这","type":"pronoun"},{"add":"мой","zh":"我的","type":"adj"}]}],"translation":"整句中文"}')
+        lines.append("")
+        lines.append("【铁律】")
+        lines.append("1. add = 这一步\u201c新加\u201d的词或词组（可含空格，如 который живёт в Москве）；不允许为空。")
+        lines.append("2. 系统拼接规则：本组第1步 target=add1；第i步 target=前一步 target + ' ' + add_i。所以你只管\u201c加什么\u201d，不用管拼出来长什么样。")
+        lines.append("3. 第1组必须是【骨架组】：add 序列按教学节奏逐步覆盖目标句全部内容，系统拼接后【最后一步必须逐字符等于目标句】。")
+        lines.append("4. 骨架组节奏：先主语/指示词 → 再修饰/谓语/补语 → 再扩展（定语从句、地点、时间）——每一步加一个\u201c教学零件\u201d，像句乐部：I → like → I like → the food → I like the food。")
+        lines.append("5. 后续组 = 变体组（对标句乐部）：")
+        lines.append("   - 否定组：先出 не（或对应否定词）→ 组合（не + 谓语）→ 拼出否定变体句")
+        lines.append("   - 疑问组：先出疑问词（Кто / Что / Где / Куда）→ 组合 → 疑问变体句")
+        lines.append("   - 替换组：换主语 / 换谓语（如 хочу / должен / нужно）→ 组合 → 变体句")
+        lines.append("6. 变体组里可【复用】目标句的词（不必重复引入），每组的最后一步 = 该变体的完整句（由系统拼接）。")
+        lines.append("7. 变体句的语法必须正确：动词用变位形式（люблю 而非 любить）、名词用正确格（еду 而非 еда）。")
+        lines.append("8. 每组 title 用中文简短说明（骨架 / 否定 / 疑问 / 换谓语 / 加时间 等）。")
+        lines.append("9. zh = 该 add 块本身的中文；translation = 目标句整句中文，符合现代中文语序。")
+        lines.append("10. chinese/type/translation 无法确定时允许省略或留空，绝不编造。")
+        lines.append("11. 禁止在 add 里写标点符号之外的整句（如禁止 add 直接等于完整句子）；标点可附着在词后（друг,）。")
+        lines.append("12. 3-6 组为宜（骨架 + 2-4 个变体），不要超过 8 组。")
+        return "\n".join(lines)
+
+    def _slot_verify_and_build(self, obj, russian_text, tokens, difficulty):
+        """校验 + 拼装：第1组（骨架）拼接必须逐字符 == 目标句；返回拼好的 groups（每步含 russian/target）。
+        非法返回 (None, reason)。"""
+        if not isinstance(obj, dict):
+            return None, "not_dict"
+        groups = obj.get("groups")
+        if not isinstance(groups, list) or not groups:
+            return None, "no_groups"
+        built = []
+        for gi, g in enumerate(groups):
+            steps = g.get("steps")
+            if not isinstance(steps, list) or not steps:
+                return None, "group_%d_no_steps" % gi
+            acc = ""
+            built_steps = []
+            for si, st in enumerate(steps):
+                add = str(st.get("add") or "").strip()
+                if not add:
+                    return None, "group_%d_step_%d_empty_add" % (gi, si)
+                acc = add if not acc else (acc + " " + add)
+                built_steps.append({
+                    "add": add,
+                    "russian": acc,
+                    "zh": str(st.get("zh") or "").strip(),
+                    "type": str(st.get("type") or "chunk").strip(),
+                })
+            built.append({"title": str(g.get("title") or "组%d" % (gi + 1)).strip(),
+                          "steps": built_steps,
+                          "final": acc})
+        # 强校验：骨架组（第1组）拼接 == 目标句（俄语化压缩空白后）
+        if built[0]["final"] != russian_text:
+            return None, "skeleton_concat_mismatch"
+        return built, None
+
+    def _handle_admin_segments_plan(self, data):
+        """POST /api/admin/segments/plan —— 句乐部式滚雪球规划（AI 出增量词序列，后端拼 target 强校验）。
+        幂等：cache ok → 返回缓存；未命中 → 调 LLM → 校验（骨架拼接==原句）→ 写 cache。
+        失败 → {fallback:true} 携带 reason。"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        sentence_hash = str(data.get("sentence_hash") or "").strip()
+        russian_text = str(data.get("russian_text") or "").strip()
+        tokens = data.get("tokens") or []
+        difficulty = str(data.get("difficulty") or "medium").strip()
+        if not sentence_hash or not russian_text or not isinstance(tokens, list) or not tokens:
+            return self._json(400, {"ok": False, "error": "缺少 sentence_hash / russian_text / tokens"})
+        if difficulty not in ("easy", "medium", "hard"):
+            difficulty = "medium"
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT plan, review_status FROM sentence_slot_plans WHERE sentence_hash=%s AND difficulty=%s",
+                                (sentence_hash, difficulty))
+                    row = cur.fetchone()
+                    if row:
+                        return {"plan": row[0], "status": row[1]}
+                    return {"plan": None, "status": None}
+            finally:
+                conn.close()
+        try:
+            r = _seg_execute(_q)
+        except Exception as e:
+            print("[slots] plan 缓存查询失败：", e)
+            return self._json(500, {"ok": False, "error": "缓存查询失败（数据库不可用）"})
+        if r.get("plan"):
+            try:
+                cached = json.loads(r["plan"])
+                return self._json(200, {"ok": True, "cached": True, "groups": cached.get("groups"), "translation": cached.get("translation") or ""})
+            except Exception:
+                pass
+        obj = call_llm(self._slot_build_prompt(tokens, difficulty, russian_text), "", json_mode=True)
+        if not obj:
+            return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
+        built, reason = self._slot_verify_and_build(obj, russian_text, tokens, difficulty)
+        if built is None:
+            print("[slots] plan 校验失败 reason=%s tokens=%d 原始返回=%s" % (reason, len(tokens), json.dumps(obj, ensure_ascii=False)[:600]))
+            return self._json(200, {"ok": False, "fallback": True, "reason": reason, "raw": json.dumps(obj, ensure_ascii=False)[:500]})
+        translation = str(obj.get("translation") or "").strip()
+        plan_json = json.dumps({"groups": built, "translation": translation}, ensure_ascii=False)
+        def _w():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    pid = "slot_" + hashlib.md5((sentence_hash + "|" + difficulty).encode("utf-8")).hexdigest()[:20]
+                    cur.execute(
+                        "INSERT INTO sentence_slot_plans (id, sentence_hash, difficulty, sentence, plan, review_status, created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,'ok',%s) "
+                        "ON DUPLICATE KEY UPDATE plan=VALUES(plan), review_status='ok'",
+                        (pid, sentence_hash, difficulty, russian_text, plan_json, int(time.time() * 1000)))
+                    conn.commit()
+            finally:
+                conn.close()
+        try:
+            _seg_execute(_w)
+        except Exception as e:
+            print("[slots] plan 写缓存失败：", e)
+        return self._json(200, {"ok": True, "groups": built, "translation": translation})
+
     def _handle_segments_read(self, params):
         """GET /api/segments?course_id=&unit_id= —— 公开读课时语块（按句+难度分组，供连词成句练习页）。
         对外字段统一 status（映射自 review_status）；占位行（未生成）→ status='generating'、segments=[]；
@@ -5972,6 +6108,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_pending(data)
             if path == "/api/admin/segments/llm-segment":
                 return self._handle_admin_segments_llm_segment(data)
+            if path == "/api/admin/segments/plan":
+                return self._handle_admin_segments_plan(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":
