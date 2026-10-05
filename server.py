@@ -1525,7 +1525,7 @@ def _quest_init():
                 # P4（句乐部式滚雪球）：槽位/增量规划缓存表（AI 只出增量词序列，电脑拼 target，零拼写错误）
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_plans (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, plan JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_plan (sentence_hash, difficulty))")
                 # P5（路线B）：句乐部式 6 列表格缓存表（键=句子hash+难度+意图指纹；意图变→重建）
-                cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_tables (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, intents_fp VARCHAR(16) NOT NULL, rows JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v1', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_table (sentence_hash, difficulty, intents_fp))")
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_tables (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, intents_fp VARCHAR(16) NOT NULL, `rows` JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v1', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_table (sentence_hash, difficulty, intents_fp))")
                 # P4 幂等迁移：plan 缓存加词池指纹列（变体组依赖词池；换词池后缓存失效重建）
                 cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
                 if not cur.fetchone():
@@ -4991,7 +4991,7 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT rows, review_status, COALESCE(prompt_v,'v1') FROM sentence_slot_tables WHERE sentence_hash=%s AND difficulty=%s AND intents_fp=%s",
+                    cur.execute("SELECT `rows`, review_status, COALESCE(prompt_v,'v1') FROM sentence_slot_tables WHERE sentence_hash=%s AND difficulty=%s AND intents_fp=%s",
                                 (sentence_hash, difficulty, intents_fp))
                     row = cur.fetchone()
                     if row:
@@ -5075,9 +5075,9 @@ class Handler(BaseHTTPRequestHandler):
                 with conn.cursor() as cur:
                     pid = "slott_" + hashlib.md5((sentence_hash + "|" + difficulty + "|" + intents_fp).encode("utf-8")).hexdigest()[:20]
                     cur.execute(
-                        "INSERT INTO sentence_slot_tables (id, sentence_hash, difficulty, sentence, intents_fp, rows, review_status, prompt_v, created_at) "
+                        "INSERT INTO sentence_slot_tables (id, sentence_hash, difficulty, sentence, intents_fp, `rows`, review_status, prompt_v, created_at) "
                         "VALUES (%s,%s,%s,%s,%s,%s,'ok',%s,%s) "
-                        "ON DUPLICATE KEY UPDATE rows=VALUES(rows), review_status='ok', prompt_v=VALUES(prompt_v)",
+                        "ON DUPLICATE KEY UPDATE `rows`=VALUES(`rows`), review_status='ok', prompt_v=VALUES(prompt_v)",
                         (pid, sentence_hash, difficulty, russian_text, intents_fp, rows_json, SLOT_TABLE_PROMPT_V, int(time.time() * 1000)))
                     conn.commit()
             finally:
