@@ -4652,6 +4652,8 @@ class Handler(BaseHTTPRequestHandler):
         if built is None:
             return self._json(200, {"ok": False, "fallback": True, "reason": reason, "raw": json.dumps(obj, ensure_ascii=False)[:500]})
         translation = str(obj.get("translation") or "").strip()
+        # 难度粒度确定性重组（不依赖 AI 自觉）：骨架组按难度重排，变体组保持 AI 原样
+        built = self._slot_apply_difficulty(built, difficulty, russian_text, translation)
         plan_json = json.dumps({"groups": built, "translation": translation}, ensure_ascii=False)
         def _w():
             conn = _quest_conn()
@@ -4671,6 +4673,63 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print("[slots] plan 写缓存失败：", e)
         return self._json(200, {"ok": True, "groups": built, "translation": translation})
+
+    # ---------- P4-B：难度粒度确定性重组（骨架组按难度重排；变体组保持 AI 原样） ----------
+    def _slot_apply_difficulty(self, built, difficulty, russian_text, translation):
+        """句乐部三档粒度（对齐用户定案：初级=词+短语 / 中级=短语+语块 / 高级=整句不拆）。
+        easy   骨架 = 逐词出（Это → мой → друг → 完整句）
+        medium 骨架 = 前2词合成短语块 + AI 其余中间块 + 完整句（Это мой → друг → 完整句）
+        hard   骨架 = 完整句一步
+        变体组保持 AI 生成的节奏（结构本身已含完整句与组合块）。"""
+        if not built:
+            return built
+        words = [w for w in russian_text.split(" ") if w]
+        sk_steps = built[0].get("steps") or []
+        zh_by_word = {}
+        zh_by_block = {}
+        for s in sk_steps:
+            txt = str(s.get("russian") or s.get("add") or "").strip()
+            if not txt:
+                continue
+            zh = str(s.get("zh") or "").strip()
+            if " " not in txt:
+                zh_by_word[txt] = zh
+            else:
+                zh_by_block[txt] = zh
+        def _combo_zh(w1, w2):
+            z1, z2 = zh_by_word.get(w1, ""), zh_by_word.get(w2, "")
+            if not z1 and not z2:
+                return ""
+            # 俄语零系词结构：Это/не 开头 → 插"是"（这是/不是）
+            p1 = (z1 + "是") if w1 in ("Это", "не") else z1
+            return (p1 + z2).strip()
+        out = []
+        for gi, g in enumerate(built):
+            if gi != 0:
+                out.append(g)
+                continue
+            new_steps = []
+            if difficulty == "hard":
+                new_steps.append({"add": russian_text, "russian": russian_text, "zh": translation, "type": "sentence"})
+            elif difficulty == "medium":
+                w1, w2 = words[0], words[1]
+                combo_txt = w1 + " " + w2
+                combo_zh = zh_by_block.get(combo_txt) or _combo_zh(w1, w2)
+                new_steps.append({"add": combo_txt, "russian": combo_txt, "zh": combo_zh, "type": "comb"})
+                for s in sk_steps:
+                    txt = str(s.get("russian") or s.get("add") or "").strip()
+                    if not txt or txt == russian_text:
+                        continue
+                    toks = txt.split(" ")
+                    if all(t in (w1, w2) for t in toks):
+                        continue
+                    new_steps.append({"add": txt, "russian": txt, "zh": str(s.get("zh") or "").strip(), "type": "comb"})
+                new_steps.append({"add": russian_text, "russian": russian_text, "zh": translation, "type": "sentence"})
+            else:  # easy：保留 AI 生成的骨架（词+短语混合，对齐用户定案"初级=词+短语"）
+                out.append(g)
+                continue
+            out.append({"title": g.get("title") or "骨架", "steps": new_steps})
+        return out
 
     # ---------- P4：课程级变体词池（9 类各 2-4 词，整课生成一次，全课变体复用） ----------
     _POOL_KEYS = (("negation", "否定词"), ("time", "时间词"), ("predicates", "谓语（变位形式）"),
