@@ -4920,6 +4920,7 @@ class Handler(BaseHTTPRequestHandler):
             row["reuseRef"] = st.get("reuseRef")
             row["hint"] = st.get("hint")
             row["compose"] = st.get("compose")
+            row["tokensRef"] = st.get("tokensRef")
             # 组合类 part 行（не люблю / делать это / Я люблю）：组装阶段机器拼（neg+pred / inf+obj / sub+pred）
             if st.get("kind") == "part" and st.get("role") in ("组合", "否定组合"):
                 row["comb"] = True
@@ -4993,7 +4994,7 @@ class Handler(BaseHTTPRequestHandler):
         return ""  # if / so / review / skeleton 不在此机器拼
 
     # ============ 机器拼装：part 行更新 ctx（组装状态机） ============
-    def _slot_table_ctx_update(self, ctx, role, ru, source, pool_key):
+    def _slot_table_ctx_update(self, ctx, role, ru, source, pool_key, tokens_ref=None):
         if not ru:
             return
         if role == "谓语":
@@ -5024,6 +5025,14 @@ class Handler(BaseHTTPRequestHandler):
             ctx["inf"] = ru
         elif role == "连词":
             ctx["conn"] = ru
+        elif role in ("组合", "否定组合", "comb"):
+            # 骨架组合块（固定 tokensRef 截取）：反推谓语供否定/换谓复用
+            ctx["last_comb"] = ru
+            if not ctx.get("pred") and ctx.get("tokens") and tokens_ref and len(tokens_ref) == 2:
+                s0, e0 = tokens_ref
+                ts = ctx["tokens"]
+                if 0 <= s0 <= e0 < len(ts):
+                    ctx["pred"] = ts[1] if s0 == 0 and e0 >= 1 else ts[s0]
 
     _SLOT_TABLE_NEG_TEMPLATES = ("negation", "time_neg", "place_neg", "predicate_neg", "object_neg")
 
@@ -5193,7 +5202,8 @@ class Handler(BaseHTTPRequestHandler):
         ai_rows = obj2["rows"]
         ctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
-               "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {}}
+               "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {},
+               "tokens": tokens, "last_comb": ""}
         out_rows = []
         for i, r in enumerate(prefilled):
             ai = ai_rows[i] if isinstance(ai_rows[i], dict) else {}
@@ -5219,7 +5229,7 @@ class Handler(BaseHTTPRequestHandler):
             if r.get("comb"):
                 tag = "组合块"  # 组合块 tag 机器固定，AI 填的 tag 不稳定
             if r.get("kind") == "part":
-                self._slot_table_ctx_update(ctx, r.get("role"), ru, r.get("source"), r.get("poolKey"))
+                self._slot_table_ctx_update(ctx, r.get("role"), ru, r.get("source"), r.get("poolKey"), r.get("tokensRef"))
             elif r.get("kind") == "full":
                 tpl = r.get("template") or ""
                 if tpl == "review":
