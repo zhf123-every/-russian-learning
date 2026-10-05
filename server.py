@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v9"
+SLOT_TABLE_PROMPT_V = "v10"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4946,7 +4946,10 @@ class Handler(BaseHTTPRequestHandler):
         if role == "否定组合":
             return (" ".join(x for x in (neg, pred) if x)).strip()
         # 组合：按教学上下文择优（优先级 = 已出现词的最自然块）
+        # ⚠️ 宾语已含不定式（делать это）时不再重复拼 inf，避免 "делать делать это"
         if inf and obj:
+            if obj.startswith(inf):
+                return obj.strip()
             return (" ".join(x for x in (inf, obj) if x)).strip()
         if inf and place:
             return (" ".join(x for x in (inf, place) if x)).strip()
