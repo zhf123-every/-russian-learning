@@ -4634,7 +4634,11 @@ class Handler(BaseHTTPRequestHandler):
         if r.get("plan") and r.get("pool_fp") == pool_fp and r.get("prompt_v") == PLAN_PROMPT_V:
             try:
                 cached = json.loads(r["plan"])
-                return self._json(200, {"ok": True, "cached": True, "groups": cached.get("groups"), "translation": cached.get("translation") or ""})
+                groups = cached.get("groups")
+                # 老缓存可能是重组前的 AI 原样 → 命中后仍做难度重组，保证三档粒度（无需等 AI 重生成）
+                if groups:
+                    groups = self._slot_apply_difficulty(groups, difficulty, russian_text, str(cached.get("translation") or "").strip())
+                return self._json(200, {"ok": True, "cached": True, "groups": groups, "translation": cached.get("translation") or ""})
             except Exception:
                 pass
         # 校验失败重试策略：AI 一次不听话（变体中文照抄/硬塞词）→ 重试 1 次；仍失败才 fallback
