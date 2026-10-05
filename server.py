@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v2"
+SLOT_TABLE_PROMPT_V = "v3"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
