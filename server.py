@@ -5229,6 +5229,13 @@ class Handler(BaseHTTPRequestHandler):
             _tpl = _r.get("template") or ""
             if not _mru and _r.get("comb"):
                 _mru = self._slot_table_machine_comb(_r.get("role"), mctx)
+            if not _mru and _r.get("kind") == "part" and not _r.get("source"):
+                # 兼容旧前端模板（infinitive 段零件未标 source 的过渡版本）：固定词兜底
+                _role = _r.get("role") or ""
+                if _role == "不定式":
+                    _mru = "делать"
+                elif _role == "宾语":
+                    _mru = "это"
             if not _mru and _r.get("kind") == "part" and _r.get("role") == "补语" and _r.get("source") == "reuse":
                 # 复用骨架宾语（predicate_swap 段）：取 ctx.obj（骨架补语/宾语已机器确定）
                 _mru = mctx.get("obj") or ""
