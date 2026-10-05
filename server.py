@@ -5422,12 +5422,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": True, "saved": len(cleaned)})
 
     def _handle_slot_tables_read(self, params):
-        """GET /api/slot-tables?course_id=&unit_id=&difficulty= —— 公开读课时 6 列表格（学生端数据源）。
-        只回 review_status='ok' 且 rows 非空的行；无 → items=[]（前端自动降级现有链路）。
+        """GET /api/slot-tables?course_id=&unit_id=&difficulty=&include_pending=1 —— 公开读课时 6 列表格（学生端数据源）。
+        默认只回 review_status='ok' 且 rows 非空的行；无 → items=[]（前端自动降级现有链路）。
+        include_pending=1（后台校对页用）：回全部行（ok/pending/generating），rows 为空也回（区分"未生成"）。
         对外字段统一 status（映射自 review_status）；rows 按 seq 升序。"""
         course_id = (params.get("course_id", [""])[0] or "").strip()
         unit_id = (params.get("unit_id", [""])[0] or "").strip()
         diff = (params.get("difficulty", [""])[0] or "").strip()
+        include_pending = (params.get("include_pending", ["0"])[0] or "0").strip() in ("1", "true", "yes")
         if not course_id or not unit_id:
             return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
         if diff and diff not in ("easy", "medium", "hard"):
@@ -5437,14 +5439,24 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    if diff:
-                        cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
-                                    "WHERE course_id=%s AND unit_id=%s AND difficulty=%s AND review_status='ok' "
-                                    "ORDER BY sentence_hash, difficulty", (course_id, unit_id, diff))
+                    if include_pending:
+                        if diff:
+                            cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                        "WHERE course_id=%s AND unit_id=%s AND difficulty=%s "
+                                        "ORDER BY sentence_hash, difficulty", (course_id, unit_id, diff))
+                        else:
+                            cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                        "WHERE course_id=%s AND unit_id=%s "
+                                        "ORDER BY sentence_hash, difficulty", (course_id, unit_id))
                     else:
-                        cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
-                                    "WHERE course_id=%s AND unit_id=%s AND review_status='ok' "
-                                    "ORDER BY sentence_hash, difficulty", (course_id, unit_id))
+                        if diff:
+                            cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                        "WHERE course_id=%s AND unit_id=%s AND difficulty=%s AND review_status='ok' "
+                                        "ORDER BY sentence_hash, difficulty", (course_id, unit_id, diff))
+                        else:
+                            cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                        "WHERE course_id=%s AND unit_id=%s AND review_status='ok' "
+                                        "ORDER BY sentence_hash, difficulty", (course_id, unit_id))
                     return cur.fetchall()
             finally:
                 conn.close()
@@ -5455,7 +5467,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"ok": False, "error": "读取表格失败（数据库不可用）"})
         groups = {}
         for r in rows:
-            if r[3] != "ok":
+            if not include_pending and r[3] != "ok":
                 continue  # 防御：SQL 已过滤，代码层再兜一道（pending/generating 不进学生端）
             if diff and r[2] != diff:
                 continue  # 防御：difficulty 过滤（假 DB/竞态下 SQL 未生效时兜底）
@@ -5466,7 +5478,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 parsed = []
             parsed = [p for p in parsed if isinstance(p, dict)]
-            if not parsed:
+            if not include_pending and not parsed:
                 continue
             parsed.sort(key=lambda p: int(p.get("seq") or 0))
             groups[key] = {"sentence_hash": r[0], "sentence": r[1], "difficulty": r[2], "status": r[3], "rows": parsed}
