@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v6"
+SLOT_TABLE_PROMPT_V = "v7"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4976,8 +4976,14 @@ class Handler(BaseHTTPRequestHandler):
         if template == "negation":
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template in ("object_pos", "predicate_pos"):
+            inf = ctx.get("inf") or ""
+            if template.startswith("object") and inf:
+                return (" ".join(x for x in (sub, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, pred, obj) if x)).strip()
         if template in ("object_neg", "predicate_neg"):
+            inf = ctx.get("inf") or ""
+            if template.startswith("object") and inf:
+                return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template == "time_pos":
             return (" ".join(x for x in (last_full, time_adv) if x)).strip()
@@ -5211,6 +5217,50 @@ class Handler(BaseHTTPRequestHandler):
                 built_intents = skeleton + [st for st in intents if st.get("template") != "skeleton"]
         # 4) 机械预填（fixed 判定）
         prefilled = self._slot_table_prefill(built_intents, tokens, pool)
+        # 4.5) 机器预拼第一遍：确定【每一行】的 ru（含 full 行），LLM-2 只填 zh/tag，绝不 AI 造词
+        #      fixed 只覆盖 part 行；full 行（skeleton/变体/review）在此机器拼出并回写 fixed，
+        #      → fill_prompt 会把所有行视为"俄语已定"→ AI 无法输出 ru（if/so 复合句除外，保留 AI ru）。
+        mctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
+                "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
+                "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {},
+                "tokens": tokens, "last_comb": "", "pred_zh": ""}
+        for _r in prefilled:
+            _mru = _r.get("fixed") or ""
+            _tpl = _r.get("template") or ""
+            if not _mru and _r.get("comb"):
+                _mru = self._slot_table_machine_comb(_r.get("role"), mctx)
+            if not _mru and _r.get("kind") == "full":
+                if _tpl == "skeleton":
+                    _comp = _r.get("compose") or []
+                    if _comp and isinstance(_comp[0].get("tokensRef"), list) and len(_comp[0]["tokensRef"]) == 2:
+                        _s0, _e0 = _comp[0]["tokensRef"]
+                        if 0 <= _s0 <= _e0 < len(tokens):
+                            _mru = " ".join(tokens[_s0:_e0 + 1])
+                else:
+                    _mru = self._slot_table_build_full(_tpl, mctx)
+            if not _mru and _tpl not in ("if", "so"):
+                # 机器拼不出的非 if/so 行：宁可整次失败（前端机械兜底 pending），绝不让 AI 造词
+                return self._json(200, {"ok": False, "fallback": True, "reason": "machine_gap", "detail": _tpl or (_r.get("role") or "")})
+            if _mru:
+                _r["fixed"] = _mru
+            if _r.get("kind") == "part":
+                self._slot_table_ctx_update(mctx, _r.get("role"), _mru, _r.get("source"), _r.get("poolKey"), _r.get("tokensRef"))
+            elif _r.get("kind") == "full" and _mru:
+                if _tpl == "review":
+                    _m = _re.search(r"复习[:：]\s*([a-z_]+)", _r.get("hint") or "")
+                    _src_tpl = _m.group(1) if _m else ""
+                    _src = mctx.get("full_by_template", {}).get(_src_tpl)
+                    if _src:
+                        _r["fixed"] = _src["ru"]
+                    elif mctx.get("last_full"):
+                        _r["fixed"] = mctx["last_full"]
+                else:
+                    mctx["last_full"] = _mru
+                    mctx["full_by_template"][_tpl] = {"ru": _mru}
+                    if _tpl in self._SLOT_TABLE_NEG_TEMPLATES:
+                        mctx["last_neg"] = _mru
+                    if _tpl in ("evaluation", "degree", "evaluation_ext", "not"):
+                        mctx["last_eval"] = _mru
         # 5) LLM-2 填词（失败重试 1 次；行多时拆批并行——单次大 JSON 生成可能超 Render 60s 网关限制）
         CHUNK = 28
 
@@ -5268,8 +5318,11 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     ru = self._slot_table_build_full(tpl, ctx)
             if not ru:
-                # 兜底：AI 填（组合块 / if / so / review 骨架已机器化）
-                ru = str(ai.get("ru") or "").strip()
+                # 兜底：仅 if/so 复合句允许 AI 填整句；其余行机器拼不出 → 整次失败（前端机械兜底 pending），绝不 AI 造词
+                if r.get("template") in ("if", "so"):
+                    ru = str(ai.get("ru") or "").strip()
+                else:
+                    return self._json(200, {"ok": False, "fallback": True, "reason": "machine_gap", "detail": r.get("template") or r.get("role") or ""})
             zh = str(ai.get("zh") or "").strip()
             tag = str(ai.get("tag") or "").strip() or r["role"] or ""
             if r.get("comb"):
