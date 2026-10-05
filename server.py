@@ -1526,6 +1526,8 @@ def _quest_init():
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_plans (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, plan JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_plan (sentence_hash, difficulty))")
                 # P5（路线B）：句乐部式 6 列表格缓存表（键=句子hash+难度+意图指纹；意图变→重建）
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_tables (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, intents_fp VARCHAR(16) NOT NULL, `rows` JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v1', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_table (sentence_hash, difficulty, intents_fp))")
+                # P2：课时维度持久化 6 列表格（学生端数据源；缓存表是全局幂等，这里是课时落地副本）
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_unit_tables (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, sentence_hash VARCHAR(64) NOT NULL, sentence TEXT NOT NULL, difficulty VARCHAR(16) NOT NULL, intents_fp VARCHAR(16) NOT NULL, `rows` JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v6', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_unit (course_id, unit_id, sentence_hash, difficulty, intents_fp), KEY idx_slot_unit (course_id, unit_id))")
                 # P4 幂等迁移：plan 缓存加词池指纹列（变体组依赖词池；换词池后缓存失效重建）
                 cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
                 if not cur.fetchone():
@@ -4244,8 +4246,10 @@ class Handler(BaseHTTPRequestHandler):
                 with conn.cursor() as cur:
                     if unit_id:
                         cur.execute("DELETE FROM sentence_segments WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                        cur.execute("DELETE FROM sentence_slot_unit_tables WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
                     else:
                         cur.execute("DELETE FROM sentence_segments WHERE course_id=%s", (course_id,))
+                        cur.execute("DELETE FROM sentence_slot_unit_tables WHERE course_id=%s", (course_id,))
                     deleted = cur.rowcount
                     conn.commit()
                     return deleted
@@ -5358,6 +5362,116 @@ class Handler(BaseHTTPRequestHandler):
             print("[slot_table] 写缓存失败：", e)
         return self._json(200, {"ok": True, "rows": out_rows})
 
+    def _handle_admin_slot_tables_save(self, data):
+        """POST /api/admin/slot-tables/save —— 课时维度持久化 6 列表格（批量 replace 语义）：
+        事务内 DELETE 该 unit 全部旧行 + INSERT 新行（幂等，与 segments save 同款）。
+        入参：{course_id, unit_id, items:[{sentence_hash, sentence, difficulty, intents_fp, rows, review_status}]}"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        items = data.get("items")
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        if not isinstance(items, list) or not items:
+            return self._json(400, {"ok": False, "error": "items 为空（应为 [句×档] 数组）"})
+        cleaned = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            sh = str(it.get("sentence_hash") or "").strip()
+            diff = str(it.get("difficulty") or "").strip()
+            rows = it.get("rows")
+            if not sh or diff not in ("easy", "medium", "hard") or not isinstance(rows, list) or not rows:
+                continue
+            cleaned.append({
+                "sentence_hash": sh,
+                "sentence": str(it.get("sentence") or "")[:1000],
+                "difficulty": diff,
+                "intents_fp": str(it.get("intents_fp") or "")[:16],
+                "rows": rows,
+                "review_status": str(it.get("review_status") or "ok")[:16] or "ok",
+            })
+        if not cleaned:
+            return self._json(400, {"ok": False, "error": "无有效条目（rows 必须是非空数组）"})
+
+        def _w():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM sentence_slot_unit_tables WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                    pid = str(uuid.uuid4())
+                    for it in cleaned:
+                        pid = str(uuid.uuid4())
+                        cur.execute(
+                            "INSERT INTO sentence_slot_unit_tables (id, course_id, unit_id, sentence_hash, sentence, difficulty, intents_fp, `rows`, review_status, prompt_v, created_at) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                            "ON DUPLICATE KEY UPDATE `rows`=VALUES(`rows`), review_status=VALUES(review_status), prompt_v=VALUES(prompt_v)",
+                            (pid, course_id, unit_id, it["sentence_hash"], it["sentence"], it["difficulty"], it["intents_fp"],
+                             json.dumps(it["rows"], ensure_ascii=False), it["review_status"], SLOT_TABLE_PROMPT_V, int(time.time() * 1000)))
+                    conn.commit()
+            finally:
+                conn.close()
+        try:
+            _seg_execute(_w)
+        except Exception as e:
+            print("[slot_tables] 保存失败：", e)
+            return self._json(500, {"ok": False, "error": "保存表格失败（数据库不可用）"})
+        self._log_op(data, "slot_tables_save", "unit", unit_id, {"course_id": course_id, "saved": len(cleaned)})
+        return self._json(200, {"ok": True, "saved": len(cleaned)})
+
+    def _handle_slot_tables_read(self, params):
+        """GET /api/slot-tables?course_id=&unit_id=&difficulty= —— 公开读课时 6 列表格（学生端数据源）。
+        只回 review_status='ok' 且 rows 非空的行；无 → items=[]（前端自动降级现有链路）。
+        对外字段统一 status（映射自 review_status）；rows 按 seq 升序。"""
+        course_id = (params.get("course_id", [""])[0] or "").strip()
+        unit_id = (params.get("unit_id", [""])[0] or "").strip()
+        diff = (params.get("difficulty", [""])[0] or "").strip()
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        if diff and diff not in ("easy", "medium", "hard"):
+            return self._json(400, {"ok": False, "error": "difficulty 非法（easy|medium|hard）"})
+
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    if diff:
+                        cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                    "WHERE course_id=%s AND unit_id=%s AND difficulty=%s AND review_status='ok' "
+                                    "ORDER BY sentence_hash, difficulty", (course_id, unit_id, diff))
+                    else:
+                        cur.execute("SELECT sentence_hash, sentence, difficulty, review_status, `rows` FROM sentence_slot_unit_tables "
+                                    "WHERE course_id=%s AND unit_id=%s AND review_status='ok' "
+                                    "ORDER BY sentence_hash, difficulty", (course_id, unit_id))
+                    return cur.fetchall()
+            finally:
+                conn.close()
+        try:
+            rows = _seg_execute(_q)
+        except Exception as e:
+            print("[slot-tables] 读取失败：", e)
+            return self._json(500, {"ok": False, "error": "读取表格失败（数据库不可用）"})
+        groups = {}
+        for r in rows:
+            if r[3] != "ok":
+                continue  # 防御：SQL 已过滤，代码层再兜一道（pending/generating 不进学生端）
+            if diff and r[2] != diff:
+                continue  # 防御：difficulty 过滤（假 DB/竞态下 SQL 未生效时兜底）
+            key = r[0]
+            parsed = []
+            try:
+                parsed = json.loads(r[4]) if isinstance(r[4], str) else (r[4] or [])
+            except Exception:
+                parsed = []
+            parsed = [p for p in parsed if isinstance(p, dict)]
+            if not parsed:
+                continue
+            parsed.sort(key=lambda p: int(p.get("seq") or 0))
+            groups[key] = {"sentence_hash": r[0], "sentence": r[1], "difficulty": r[2], "status": r[3], "rows": parsed}
+        return self._json(200, {"ok": True, "items": list(groups.values())})
+
     def _handle_segments_read(self, params):
         """GET /api/segments?course_id=&unit_id= —— 公开读课时语块（按句+难度分组，供连词成句练习页）。
         对外字段统一 status（映射自 review_status）；占位行（未生成）→ status='generating'、segments=[]；
@@ -5700,6 +5814,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/segments":
             query = urllib.parse.urlparse(self.path).query
             return self._handle_segments_read(urllib.parse.parse_qs(query))
+        if path == "/api/slot-tables":
+            query = urllib.parse.urlparse(self.path).query
+            return self._handle_slot_tables_read(urllib.parse.parse_qs(query))
         if path == "/api/reviews/list":
             return self._handle_reviews_list()
         if path == "/api/videos/resolve":
@@ -6872,6 +6989,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_pool(data)
             if path == "/api/admin/segments/table-fill":
                 return self._handle_admin_segments_table_fill(data)
+            if path == "/api/admin/slot-tables/save":
+                return self._handle_admin_slot_tables_save(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":
