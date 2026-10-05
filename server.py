@@ -4808,7 +4808,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- P5（路线B）：句乐部式 6 列表格生成 ----------
     # AI 只做 3 件事：① 意群分组决策（骨架，返回索引组）② 从词池/模板选词填文本 ③ 变格变位 + 中文翻译 + 语法标签。
     # 结构（序号/卡片类型/组ID/步骤顺序）全部由机器按前端模板引擎（jlTableEngine.js）的意图序列补齐 → 结构错误率趋近 0。
-    _SLOT_TABLE_FIXED_POOL_KEYS = ("negation", "time", "place", "degree", "evaluation", "preposition", "connector")
+    _SLOT_TABLE_FIXED_POOL_KEYS = ("negation", "time", "place", "degree", "evaluation", "preposition", "connector", "predicates", "objects")
     _SLOT_TABLE_TEMPLATE_ZH = {
         "skeleton": "骨架完整句", "negation": "否定句", "time_pos": "加时间状语", "time_neg": "否定+时间",
         "predicate_pos": "换谓语肯定句", "predicate_neg": "换谓语否定句", "object_pos": "换宾语肯定句",
@@ -4919,8 +4919,152 @@ class Handler(BaseHTTPRequestHandler):
             row["poolKey"] = st.get("poolKey")
             row["reuseRef"] = st.get("reuseRef")
             row["hint"] = st.get("hint")
+            row["compose"] = st.get("compose")
+            # 组合类 part 行（не люблю / делать это / Я люблю）：组装阶段机器拼（neg+pred / inf+obj / sub+pred）
+            if st.get("kind") == "part" and st.get("role") in ("组合", "否定组合"):
+                row["comb"] = True
             rows.append(row)
         return rows
+
+    # ============ 机器拼装：组合块（part 行 role=组合/否定组合） ============
+    # 词来自 ctx（前序已机器确定的词）：не+谓语 / 不定式+宾语 / 不定式+地点 / 主语+谓语 / 谓语+宾语
+    def _slot_table_machine_comb(self, role, ctx):
+        if not role:
+            return ""
+        neg = ctx.get("neg") or ""
+        pred = ctx.get("pred") or ""
+        obj = ctx.get("obj") or ""
+        inf = ctx.get("inf") or ""
+        place = ctx.get("place") or ""
+        sub = ctx.get("sub") or ""
+        if role == "否定组合":
+            return (" ".join(x for x in (neg, pred) if x)).strip()
+        # 组合：按教学上下文择优（优先级 = 已出现词的最自然块）
+        if inf and obj:
+            return (" ".join(x for x in (inf, obj) if x)).strip()
+        if inf and place:
+            return (" ".join(x for x in (inf, place) if x)).strip()
+        if neg and pred:
+            return (" ".join(x for x in (neg, pred) if x)).strip()
+        if sub and pred and not obj:
+            return (" ".join(x for x in (sub, pred) if x)).strip()
+        if pred and obj:
+            return (" ".join(x for x in (pred, obj) if x)).strip()
+        return ""
+
+    # ============ 机器拼装：完整句（full 行；除 if/so/review/skeleton 全由机器拼） ============
+    # 模板结构由模板定死，槽位词来自 ctx（前序词池/模板词/上一完整句）→ 结构错误率趋近 0
+    def _slot_table_build_full(self, template, ctx):
+        if not template:
+            return ""
+        sub = "Мне" if ctx.get("nominal_pred") else (ctx.get("sub") or "Я")
+        neg = ctx.get("neg") or ""
+        pred = ctx.get("pred") or ""
+        obj = ctx.get("obj") or ""
+        time_adv = ctx.get("time_adv") or ""
+        place = ctx.get("place") or ""
+        evalw = ctx.get("eval") or ""
+        last_full = ctx.get("last_full") or ""
+        last_neg = ctx.get("last_neg") or ""
+        last_eval = ctx.get("last_eval") or ""
+        if template == "negation":
+            return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
+        if template in ("object_pos", "predicate_pos"):
+            return (" ".join(x for x in (sub, pred, obj) if x)).strip()
+        if template in ("object_neg", "predicate_neg"):
+            return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
+        if template == "time_pos":
+            return (" ".join(x for x in (last_full, time_adv) if x)).strip()
+        if template == "time_neg":
+            return (" ".join(x for x in (last_neg, time_adv) if x)).strip()
+        if template == "place_pos":
+            return (" ".join(x for x in (last_full, place) if x)).strip()
+        if template == "place_neg":
+            return (" ".join(x for x in (last_neg, place) if x)).strip()
+        if template == "evaluation":
+            return ("Это " + evalw).strip() if evalw else ""
+        if template == "degree":
+            return ("Это очень " + evalw).strip() if evalw else ""
+        if template == "evaluation_ext":
+            ext = ctx.get("ext") or ctx.get("inf") or ""
+            return (" ".join(x for x in (last_eval, ext) if x)).strip()
+        if template == "not":
+            return "Это не важно"
+        return ""  # if / so / review / skeleton 不在此机器拼
+
+    # ============ 机器拼装：part 行更新 ctx（组装状态机） ============
+    def _slot_table_ctx_update(self, ctx, role, ru, source, pool_key):
+        if not ru:
+            return
+        if role == "谓语":
+            ctx["pred"] = ru
+            ctx["nominal_pred"] = ru in ("нужно", "надо", "можно", "нельзя")
+        elif role == "补语":
+            if source == "template":
+                ctx["ext"] = ru
+            else:
+                ctx["obj"] = ru
+        elif role == "宾语":
+            ctx["obj"] = ru
+        elif role == "否定":
+            ctx["neg"] = ru
+        elif role == "否定组合":
+            ctx["neg_comb"] = ru
+        elif role == "时间":
+            ctx["time_adv"] = ru
+        elif role == "频率":
+            ctx["time_adv"] = ru
+        elif role == "地点":
+            ctx["place"] = ru
+        elif role == "程度":
+            ctx["deg"] = ru
+        elif role == "评价":
+            ctx["eval"] = ru
+        elif role == "不定式":
+            ctx["inf"] = ru
+        elif role == "连词":
+            ctx["conn"] = ru
+
+    _SLOT_TABLE_NEG_TEMPLATES = ("negation", "time_neg", "place_neg", "predicate_neg", "object_neg")
+
+    # ============ 同组完整句互重重填（if/so 由 AI 填 → 重复时单独重填 1 次 → 仍重复 fallback） ============
+    def _slot_table_retry_dup(self, prefilled, out_rows, dup_idx, russian_text):
+        lines = [
+            "你是俄语教学填词器。下面 %d 行完整句与各自组内已有句子重复，请给每行一个【全新】的俄语完整句（语法完全正确、语义自然）。" % len(dup_idx),
+            "【铁律】新句不得等于核心句（%s）；不得与同组任何完整句重复；不得照抄中文。只输出 JSON。" % russian_text,
+            "",
+        ]
+        for k, i in enumerate(dup_idx):
+            lines.append("%d. 模板=%s 组=%s（原句已被拒绝）" % (k + 1, prefilled[i].get("template") or "", prefilled[i].get("groupId") or ""))
+        lines.append('【输出】{"rows":[{"ru":"...","zh":"...","tag":"..."}]}')
+        obj = call_llm("\n".join(lines), "", json_mode=True)
+        if not obj or not isinstance(obj.get("rows"), list):
+            return None
+        new_rows = [dict(r) for r in out_rows]
+        seen = {}
+        for k, i in enumerate(dup_idx):
+            ai = obj["rows"][k] if k < len(obj["rows"]) and isinstance(obj["rows"][k], dict) else None
+            if not ai:
+                return None
+            ru = str(ai.get("ru") or "").strip()
+            g = new_rows[i]["groupId"]
+            s = seen.setdefault(g, set())
+            if not ru or ru == russian_text or ru in s:
+                return None
+            s.add(ru)
+            new_rows[i]["ru"] = ru
+            new_rows[i]["zh"] = str(ai.get("zh") or "").strip() or new_rows[i]["zh"]
+            new_rows[i]["tag"] = str(ai.get("tag") or "").strip() or new_rows[i]["tag"]
+        # 与整表其他完整句复检（含重填行彼此、与未重填行）
+        all_ru = {}
+        for row in new_rows:
+            if row["cardType"] != "完整句":
+                continue
+            s = all_ru.setdefault(row["groupId"], set())
+            if row["ru"] in s:
+                return None
+            s.add(row["ru"])
+        return new_rows
 
     def _slot_table_fill_prompt(self, russian_text, rows, pool=None):
         pool_label = dict(self._POOL_KEYS)
@@ -4928,9 +5072,10 @@ class Handler(BaseHTTPRequestHandler):
             "你是俄语教学句乐部课程的【填词与翻译】。你只填每张学习卡片的内容，禁止改变卡片顺序和数量。只输出 JSON，不要解释。",
             "【核心句】（已俄语化，骨架完整句由机器拼装保证等于它）：", russian_text, "",
             "【规则】",
-            "- 俄语已定（fixed_ru）的行：你【禁止修改】俄语，只填 zh（准确中文翻译）和 tag（语法标签，如 主语 / 动词变位 / 名词宾格 / 否定句 / 主谓宾结构）。",
-            "- 俄语未定的行：你填 ru（语法完全正确、语义自然的俄语；换谓语/换宾语/评价句/复合句必须整句重写，禁止把新词硬塞进原句语序）+ zh + tag。",
+            "- 俄语已定（fixed_ru / 机器拼装）的行：你【禁止修改】俄语，只填 zh（准确中文翻译）和 tag（语法标签，如 主语 / 动词变位 / 名词宾格 / 否定句 / 主谓宾结构）。",
+            "- 俄语未定的行（只可能是 组合块 或 复合句 if/so）：组合块填 ru（短语，禁止整句）；if/so 填 ru（完整句子，语法正确）。其余行俄语都已被机器拼装确定，你【禁止】改动。",
             "- 每行 zh 必须反映该行内容；完整句行的 zh 是整句翻译，禁止照抄其他句的翻译。",
+            "- 【铁律】完整句之间不得互相重复；任何完整句不得等于或照抄核心句（russian_text）。",
             "- tag 用中文简短提炼语法点（3-10 字）。",
             "- 行数必须与输入一致，顺序不可调换。",
             "",
@@ -4957,6 +5102,7 @@ class Handler(BaseHTTPRequestHandler):
         return "\n".join(lines)
 
     def _handle_admin_segments_table_fill(self, data):
+        import re as _re
         """POST /api/admin/segments/table-fill —— 句乐部式 6 列表格生成（路线B）。
         入参: {sentence_hash, russian_text, tokens, difficulty, intents, pool?}
         intents = 前端模板引擎（jlTableEngine.js）的意图序列；骨架部分若缺 tokensRef → 后端做 AI 分组决策后机器生成。
@@ -5043,29 +5189,94 @@ class Handler(BaseHTTPRequestHandler):
             obj2 = None
         if obj2 is None:
             return self._json(200, {"ok": False, "fallback": True, "reason": "fill_failed"})
-        # 6) 组装（fixed 行 ru 以机器值为准，AI 若篡改直接覆盖，不判失败重试）+ 骨架完整句防御
+        # 6) 组装：机器拼装状态机（AI 只填 zh/tag 与 if/so；结构由模板定死，错误率趋近 0）
         ai_rows = obj2["rows"]
+        ctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
+               "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
+               "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {}}
         out_rows = []
         for i, r in enumerate(prefilled):
             ai = ai_rows[i] if isinstance(ai_rows[i], dict) else {}
-            ru = r["fixed"]
+            ru = r["fixed"] or ""
+            if not ru and r.get("comb"):
+                ru = self._slot_table_machine_comb(r.get("role"), ctx)
+            if not ru and r.get("kind") == "full":
+                tpl = r.get("template") or ""
+                if tpl == "skeleton":
+                    # 骨架完整句 = compose tokensRef 机械截取（拼接天然 == 原句）
+                    comp = r.get("compose") or []
+                    if comp and isinstance(comp[0].get("tokensRef"), list) and len(comp[0]["tokensRef"]) == 2:
+                        s0, e0 = comp[0]["tokensRef"]
+                        if 0 <= s0 <= e0 < len(tokens):
+                            ru = " ".join(tokens[s0:e0 + 1])
+                else:
+                    ru = self._slot_table_build_full(tpl, ctx)
             if not ru:
+                # 兜底：AI 填（组合块 / if / so / review 骨架已机器化）
                 ru = str(ai.get("ru") or "").strip()
             zh = str(ai.get("zh") or "").strip()
             tag = str(ai.get("tag") or "").strip() or r["role"] or ""
+            if r.get("kind") == "part":
+                self._slot_table_ctx_update(ctx, r.get("role"), ru, r.get("source"), r.get("poolKey"))
+            elif r.get("kind") == "full":
+                tpl = r.get("template") or ""
+                if tpl == "review":
+                    # 复习行：按 hint 模板名复制已生成完整句（含 zh/tag），零 AI 结构决策
+                    m = _re.search(r"复习[:：]\s*([a-z_]+)", r.get("hint") or "")
+                    src_tpl = m.group(1) if m else ""
+                    src = ctx.get("full_by_template", {}).get(src_tpl)
+                    if src:
+                        ru = src["ru"]
+                        zh = src["zh"]
+                        tag = "复习回顾"
+                    elif ctx.get("last_full"):
+                        ru = ctx["last_full"]
+                        zh = str(ctx.get("last_full_zh") or "").strip()
+                        tag = "复习回顾"
+                else:
+                    if ru:
+                        ctx["last_full"] = ru
+                        ctx["last_full_zh"] = zh
+                        ctx["full_by_template"][tpl] = {"ru": ru, "zh": zh}
+                        if tpl in self._SLOT_TABLE_NEG_TEMPLATES:
+                            ctx["last_neg"] = ru
+                        if tpl in ("evaluation", "degree", "evaluation_ext", "not"):
+                            ctx["last_eval"] = ru
             out_rows.append({"seq": i + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
+        # 6.5) 骨架完整句防御：第一完整句必须逐字符 == 原句（数字俄语化后比较），否则回写机器值
         sk_ru = ""
         for row in out_rows:
             if row["cardType"] == "完整句":
                 sk_ru = row["ru"]
                 break
         if sk_ru and sk_ru != russian_text:
-            # 骨架完整句被篡改（理论不发生：骨架 full 行 ru 是机械拼装；防御兜底回写）
             sk_ru2 = " ".join(tokens)
             for row in out_rows:
                 if row["cardType"] == "完整句":
                     row["ru"] = sk_ru2
                     break
+        # 6.6) 同组完整句互重 / 变体重复原句 检测（机器拼装天然不重；if/so 由 AI 填 → 重填 1 次 → 仍重 → fallback dup_full）
+        seen_in_group = {}
+        dup_idx = []
+        first_full_seen = False
+        for i, row in enumerate(out_rows):
+            if row["cardType"] != "完整句":
+                continue
+            if not first_full_seen:
+                # 第一完整句 = 骨架行（=原句），作基准不入 dup 检测
+                first_full_seen = True
+                s = seen_in_group.setdefault(row["groupId"], set())
+                s.add(row["ru"])
+                continue
+            s = seen_in_group.setdefault(row["groupId"], set())
+            if row["ru"] in s or row["ru"] == russian_text:
+                dup_idx.append(i)
+            s.add(row["ru"])
+        if dup_idx:
+            retried = self._slot_table_retry_dup(prefilled, out_rows, dup_idx, russian_text)
+            if retried is None:
+                return self._json(200, {"ok": False, "fallback": True, "reason": "dup_full"})
+            out_rows = retried
         # 7) 写缓存（幂等 upsert）
         rows_json = json.dumps(out_rows, ensure_ascii=False)
 
