@@ -81,6 +81,9 @@ CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN") or ""
 # 学习广场管理员密钥：上传/删除素材需携带 adminKey == ADMIN_KEY
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
+# ---- P4-B 句乐部 plan Prompt 版本：Prompt 升级后旧缓存自动失效重建（避免旧错误结果一直命中） ----
+PLAN_PROMPT_V = "v3"
+
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
@@ -1522,6 +1525,10 @@ def _quest_init():
                 cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
                 if not cur.fetchone():
                     cur.execute("ALTER TABLE sentence_slot_plans ADD COLUMN pool_fp VARCHAR(16) DEFAULT ''")
+                # P4-B 幂等迁移：plan 缓存加 Prompt 版本列（Prompt 升级后旧缓存失效重建，避免旧错误结果一直命中）
+                cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'prompt_v'")
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE sentence_slot_plans ADD COLUMN prompt_v VARCHAR(8) DEFAULT 'v2'")
                 # P1 幂等迁移：cache 加 translation 列；sentence_segments.cache_id 允许 NULL（占位行用）
                 cur.execute("SHOW COLUMNS FROM sentence_segment_cache LIKE 'translation'")
                 if not cur.fetchone():
@@ -4473,12 +4480,12 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- P4：句乐部式滚雪球规划（AI 出增量词序列，电脑拼 target） ----------
     def _slot_build_prompt(self, tokens, difficulty, russian_text, pool=None):
         lines = [
-            "你是俄语教学\u201c句乐部式滚雪球\u201d规划师。你只输出\u201c增量词/块序列\u201d，【绝对禁止输出完整俄语句子】——完整句子由系统逐块拼接，你只负责决定每一步\u201c新加什么\u201d。只输出 JSON，不要任何解释或 markdown 包裹。",
+            "你是俄语教学\u201c句乐部式滚雪球\u201d规划师。你输出\u201c教学块序列\u201d（块模式：系统直接显示每步 add 作为 russian，不做累加）。只输出 JSON，不要任何解释或 markdown 包裹。",
             "",
-            "【目标句】（已俄语化，系统最终校验拼接结果必须逐字符等于它）：",
+            "【目标句】（已俄语化，系统最终校验每组最后一步必须逐字符等于对应的完整句）：",
             russian_text,
             "",
-            "【token 列表】（编号从 0 开始，仅作参考，你不必使用全部编号）：",
+            "【token 列表】（编号从 0 开始，仅作参考）：",
         ]
         for i, t in enumerate(tokens):
             lines.append("%d: %s" % (i, t))
@@ -4499,28 +4506,40 @@ class Handler(BaseHTTPRequestHandler):
         lines.append("【输出格式】groups = 教学组序列，每组 = 一条滚雪球路径：")
         lines.append('{"groups":[{"title":"骨架","steps":[{"add":"Это","zh":"这","type":"pronoun"},{"add":"мой","zh":"我的","type":"adj"}]}],"translation":"整句中文"}')
         lines.append("")
+        lines.append("【当前难度（决定块粒度，必须遵守）】%s" % difficulty)
+        lines.append("【难度粒度规则】")
+        lines.append("- easy（初级）：允许单字成组；固定搭配整体一组；骨架按教学节奏逐步拆到单词/短语级（对齐句乐部 01-05：I → like → I like → the food → I like the food）。")
+        lines.append("- medium（中级）：禁止单字成组，最小教学块是短语/语块（至少 2 个词）；骨架块数比 easy 少。")
+        lines.append("- hard（高级）：不拆块，整句一组——骨架组直接 1 步 = 完整句；变体组也尽量一步 = 完整变体句（如否定 = «Это не мой друг» 一步）。")
+        lines.append("")
         lines.append("【铁律】")
         lines.append("1. add = 这一步\u201c新建立的教学块\u201d（词 / 短语组合 / 完整句）。不允许为空。")
-        lines.append("2. 块模式（对齐句乐部）：系统【直接显示 add 作为这一步的 russian，不做累加】。每组从\u201c新块单出\u201d开始，逐步组合更大的块，**每组最后一步 add 必须是完整句**（句乐部：don't → like → don't like → I don't like the food）。")
-        lines.append("3. 第1组必须是【骨架组】：add 序列按教学节奏逐步覆盖目标句全部内容，系统拼接后【最后一步必须逐字符等于目标句】。")
-        lines.append("4. 骨架组节奏（块级组合，不是逐词滚，对标句乐部 01-05：I → like → I like → the food → I like the food）：主语/指示词单出 → 谓语单出 → 主谓组合 → 补语块单出（介词短语/不定式短语先组合成块，如 в парке、to do it）→ 最后拼出完整句。每步只加一个\u201c教学零件\u201d。")
-        lines.append("5. 后续组 = 变体组。变体类型【只能从以下 9 类白名单选择】，且【必须按该类固定节奏出步】——节奏由模板决定，你只负责填词，禁止自己改步数节奏：")
-        lines.append("   [1 否定]（4步）否定词单出（не）→ 原句谓语单出 → 组合（не+谓语）→ 完整否定句")
+        lines.append("2. 块模式：系统直接显示 add 作为 russian。每组从\u201c新块单出\u201d开始逐步组合更大的块，**每组最后一步 add 必须是完整句**（句乐部：don't → like → don't like → I don't like the food）。")
+        lines.append("3. 第1组必须是【骨架组】：add 序列覆盖目标句全部内容，系统拼接后【最后一步必须逐字符等于目标句】。")
+        lines.append("4. 骨架组节奏：主语/指示词单出 → 谓语单出 → 主谓组合 → 补语块单出（介词短语/不定式短语先组合成块）→ 最后拼出完整句。每步只加一个\u201c教学零件\u201d。")
+        lines.append("5. 后续组 = 变体组。变体类型【只能从以下 9 类白名单选择】，且【必须按该类固定节奏出步】——你只负责填词，禁止自己改步数节奏：")
+        lines.append("   [1 否定]（4步）не 单出 → 原句其余成分成块单出 → 组合（не+成块）→ 完整否定句")
         lines.append("   [2 时间状语]（3步）时间词单出（завтра）→ 完整句+追加时间 → 否定完整句+追加时间")
-        lines.append("   [3 换谓语]（5步）新谓语单出（должен）→ 原句补语/不定式单出 → 完整肯定句 → 否定组合（не+新谓语）→ 完整否定句")
-        lines.append("   [4 换补语]（3-4步）新补语单出 → 与已有动词组合成块（гулять здесь）→ 完整肯定句 →（可选）完整否定句")
-        lines.append("   [5 评价句]（3-4步）это 单出 → это + 形容词（это важно，句型建立）→ 扩展词追加（very/for me）→ 完整评价句")
-        lines.append("   [6 程度副词]（2步）程度词单出（очень）→ 评价句+程度词（Это очень важно）")
-        lines.append("   [7 介词短语]（2步）短语单出（для меня）→ 完整句+短语（Это важно для меня）")
-        lines.append("   [8 复合句]（3步）连词单出（поэтому）→ 完整句A → 完整句A+连词+完整句B")
-        lines.append("   [9 地点]（3步）地点词单出（здесь）→ 组合（动词+地点，гулять здесь）→ 完整句")
-        lines.append("6. 节奏铁律：每组的【第1步永远是单出新词/新块】；【能组合的先组合成块再拼完整句】；【完整句只能在每组最后一步】；【肯定句后尽量跟否定句（配对）；状语类除外】；全程复用已学词块，禁止重复引入。")
-        lines.append("7. 变体组里可【复用】目标句的词（不必重复引入），每组的最后一步 = 该变体的完整句（由系统拼接）。")
-        lines.append("8. 每组 title 用中文简短说明（骨架 / 否定 / 加时间 / 换谓语 / 换补语 / 评价句 / 程度 / 介词 / 复合句 / 地点）。")
-        lines.append("9. zh = 该 add 块本身的中文；translation = 目标句整句中文，符合现代中文语序。")
-        lines.append("10. chinese/type/translation 无法确定时允许省略或留空，绝不编造。")
-        lines.append("11. add 规则：**每组最后一步 add = 该组完整句**（允许也必须是完整句）；中间步骤 add 禁止等于完整句——必须是单块（词/短语组合），比完整句短。标点可附着在块后（парке.）。")
-        lines.append("12. 每句 3-6 组为宜（骨架 + 2-4 个变体，从白名单挑 2-4 类），不要超过 8 组；变体类型尽量不重复。")
+        lines.append("   [3 换谓语]（5步）新谓语单出（должен）→ 原句补语/不定式单出 → 完整肯定句（**整句重写**）→ 否定组合（не+新谓语）→ 完整否定句（**整句重写**）")
+        lines.append("   [4 换补语]（3-4步）新补语单出 → 与已有动词组合成块 → 完整肯定句（**整句重写**）→（可选）完整否定句")
+        lines.append("   [5 评价句]（3-4步）это 单出 → это+形容词（это хорошо）→ 扩展词追加（очень/для меня）→ 完整评价句（**整句重写**）")
+        lines.append("   [6 程度副词]（2步）程度词单出（очень）→ 完整评价句+程度词")
+        lines.append("   [7 介词短语]（2步）短语单出（для меня）→ 完整句+短语")
+        lines.append("   [8 复合句]（3步）连词单出（поэтому）→ 完整句A → 完整句A+连词+完整句B（**整句重写**）")
+        lines.append("   [9 地点]（3步）地点词单出（здесь）→ 组合（动词+地点）→ 完整句")
+        lines.append("6. 节奏铁律：每组的【第1步永远是单出新词/新块】；【能组合的先组合成块再拼完整句】；【完整句只能在每组最后一步】；【肯定句后尽量跟否定句（配对；状语类除外）】；全程复用已学词块，禁止重复引入。")
+        lines.append("7. 【变体组硬规则——最重要】")
+        lines.append("   a. 变体组最后一步 = 语法完全正确、语义自然通顺的完整俄语句子。")
+        lines.append("   b. 【换谓语/换补语/评价句/复合句】必须【整体重写句子结构】：在目标句语义基础上重新组织词序（例：目标句 «Это мой друг» 换谓语 → «Я вижу своего друга»；评价句 → «Это очень хороший друг»；换补语 → «Это мой друг в Москве»）。**禁止把新词硬塞进原句的语序**（禁止 «Это мой друг вижу» 这种词序错乱）。")
+        lines.append("   c. 【否定/时间/地点】在原句框架内最小改动：否定插到系词/谓语后（«Это не мой друг»）、状语追加到句尾（«Это мой друг сегодня»），保持原句语序。")
+        lines.append("   d. 变体组末步【禁止与骨架末步相同】（不能重复原句）。")
+        lines.append("   e. 每个变体句都是**新句子**，允许增减词、改变词序，只要语义是目标句的自然变形。")
+        lines.append("8. 【中文翻译硬规则】")
+        lines.append("   a. 每步 zh = 该步 add 俄语的【准确中文翻译】，禁止照抄别的步骤的翻译。")
+        lines.append("   b. 变体句的中文必须反映该变体语义：否定句要翻出\u201c不\u201d，时间句要翻出时间词，换谓语句要翻出新动词（«Это мой друг» → 换谓语变体句中文是\u201c我看见我的朋友\u201d，不能还是\u201c这是我的朋友\u201d）。")
+        lines.append("   c. translation = 目标句整句中文。")
+        lines.append("9. 每组 title 用中文简短说明（骨架 / 否定 / 加时间 / 换谓语 / 换补语 / 评价句 / 程度 / 介词 / 复合句 / 地点）。")
+        lines.append("10. 每句 3-6 组为宜（骨架 + 2-4 个变体，从白名单挑 2-4 类），不要超过 8 组；变体类型尽量不重复。")
         return "\n".join(lines)
 
     def _slot_verify_and_build(self, obj, russian_text, tokens, difficulty):
@@ -4585,12 +4604,12 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT plan, review_status, COALESCE(pool_fp,'') FROM sentence_slot_plans WHERE sentence_hash=%s AND difficulty=%s",
+                    cur.execute("SELECT plan, review_status, COALESCE(pool_fp,''), COALESCE(prompt_v,'v2') FROM sentence_slot_plans WHERE sentence_hash=%s AND difficulty=%s",
                                 (sentence_hash, difficulty))
                     row = cur.fetchone()
                     if row:
-                        return {"plan": row[0], "status": row[1], "pool_fp": row[2]}
-                    return {"plan": None, "status": None, "pool_fp": ""}
+                        return {"plan": row[0], "status": row[1], "pool_fp": row[2], "prompt_v": row[3]}
+                    return {"plan": None, "status": None, "pool_fp": "", "prompt_v": ""}
             finally:
                 conn.close()
         try:
@@ -4598,7 +4617,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             print("[slots] plan 缓存查询失败：", e)
             return self._json(500, {"ok": False, "error": "缓存查询失败（数据库不可用）"})
-        if r.get("plan") and r.get("pool_fp") == pool_fp:
+        # 缓存命中条件：plan 存在 + 词池指纹一致 + Prompt 版本一致（Prompt 升级后旧缓存自动失效）
+        if r.get("plan") and r.get("pool_fp") == pool_fp and r.get("prompt_v") == PLAN_PROMPT_V:
             try:
                 cached = json.loads(r["plan"])
                 return self._json(200, {"ok": True, "cached": True, "groups": cached.get("groups"), "translation": cached.get("translation") or ""})
@@ -4619,10 +4639,10 @@ class Handler(BaseHTTPRequestHandler):
                 with conn.cursor() as cur:
                     pid = "slot_" + hashlib.md5((sentence_hash + "|" + difficulty).encode("utf-8")).hexdigest()[:20]
                     cur.execute(
-                        "INSERT INTO sentence_slot_plans (id, sentence_hash, difficulty, sentence, plan, review_status, created_at, pool_fp) "
-                        "VALUES (%s,%s,%s,%s,%s,'ok',%s,%s) "
-                        "ON DUPLICATE KEY UPDATE plan=VALUES(plan), review_status='ok', pool_fp=VALUES(pool_fp)",
-                        (pid, sentence_hash, difficulty, russian_text, plan_json, int(time.time() * 1000), pool_fp))
+                        "INSERT INTO sentence_slot_plans (id, sentence_hash, difficulty, sentence, plan, review_status, created_at, pool_fp, prompt_v) "
+                        "VALUES (%s,%s,%s,%s,%s,'ok',%s,%s,%s) "
+                        "ON DUPLICATE KEY UPDATE plan=VALUES(plan), review_status='ok', pool_fp=VALUES(pool_fp), prompt_v=VALUES(prompt_v)",
+                        (pid, sentence_hash, difficulty, russian_text, plan_json, int(time.time() * 1000), pool_fp, PLAN_PROMPT_V))
                     conn.commit()
             finally:
                 conn.close()
