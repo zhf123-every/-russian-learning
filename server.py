@@ -5184,7 +5184,11 @@ class Handler(BaseHTTPRequestHandler):
         # 3) 生成（含骨架分组）
         built_intents = intents
         if need_group:
-            obj = call_llm(self._slot_table_group_prompt(tokens, russian_text, difficulty), "", json_mode=True)
+            obj = None
+            for _g in range(2):  # 分组 LLM 偶发空响应，重试 1 次
+                obj = call_llm(self._slot_table_group_prompt(tokens, russian_text, difficulty), "", json_mode=True)
+                if obj:
+                    break
             if not obj:
                 return self._json(200, {"ok": False, "fallback": True, "reason": "group_ai_none"})
             groups = self._slot_table_group_verify(obj.get("groups"), len(tokens))
