@@ -4822,9 +4822,11 @@ class Handler(BaseHTTPRequestHandler):
         "freq_neg": "否定+频率", "swap_neg": "换宾语否定句",
     }
 
-    def _slot_table_intents_fp(self, intents):
+    def _slot_table_intents_fp(self, intents, pool=None):
         try:
-            return hashlib.md5(json.dumps(intents, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+            # 指纹 = 意图结构 + 词池内容：改模板结构或改词池都会自动失效缓存（防止旧词池脏表命中）
+            payload = {"intents": intents, "pool": pool or {}}
+            return hashlib.md5(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
         except Exception:
             return ""
 
@@ -5195,7 +5197,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "缺少 sentence_hash / russian_text / tokens"})
         if not isinstance(intents, list) or not intents:
             return self._json(400, {"ok": False, "error": "缺少 intents（模板引擎意图序列）"})
-        intents_fp = self._slot_table_intents_fp(intents)
+        intents_fp = self._slot_table_intents_fp(intents, pool)
         # 1) 骨架分组：intents 骨架段缺 tokensRef → 后端 AI 分组 + 机器生成骨架（前端已给分组则跳过）
         need_group = True
         for st in intents:
