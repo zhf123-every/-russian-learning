@@ -84,6 +84,9 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 # ---- P4-B 句乐部 plan Prompt 版本：Prompt 升级后旧缓存自动失效重建（避免旧错误结果一直命中） ----
 PLAN_PROMPT_V = "v3.2"
 
+# ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
+SLOT_TABLE_PROMPT_V = "v1"
+
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
@@ -1521,6 +1524,8 @@ def _quest_init():
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_seg_cache_id ON sentence_segments(cache_id)")
                 # P4（句乐部式滚雪球）：槽位/增量规划缓存表（AI 只出增量词序列，电脑拼 target，零拼写错误）
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_plans (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, plan JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_plan (sentence_hash, difficulty))")
+                # P5（路线B）：句乐部式 6 列表格缓存表（键=句子hash+难度+意图指纹；意图变→重建）
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_tables (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, intents_fp VARCHAR(16) NOT NULL, rows JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v1', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_table (sentence_hash, difficulty, intents_fp))")
                 # P4 幂等迁移：plan 缓存加词池指纹列（变体组依赖词池；换词池后缓存失效重建）
                 cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
                 if not cur.fetchone():
@@ -4800,6 +4805,289 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "fallback": True, "reason": reason, "raw": json.dumps(obj, ensure_ascii=False)[:400]})
         return self._json(200, {"ok": True, "pool": pool})
 
+    # ---------- P5（路线B）：句乐部式 6 列表格生成 ----------
+    # AI 只做 3 件事：① 意群分组决策（骨架，返回索引组）② 从词池/模板选词填文本 ③ 变格变位 + 中文翻译 + 语法标签。
+    # 结构（序号/卡片类型/组ID/步骤顺序）全部由机器按前端模板引擎（jlTableEngine.js）的意图序列补齐 → 结构错误率趋近 0。
+    _SLOT_TABLE_FIXED_POOL_KEYS = ("negation", "time", "place", "degree", "evaluation", "preposition", "connector")
+    _SLOT_TABLE_TEMPLATE_ZH = {
+        "skeleton": "骨架完整句", "negation": "否定句", "time_pos": "加时间状语", "time_neg": "否定+时间",
+        "predicate_pos": "换谓语肯定句", "predicate_neg": "换谓语否定句", "object_pos": "换宾语肯定句",
+        "object_neg": "换宾语否定句", "evaluation": "评价句", "evaluation_ext": "评价句扩展",
+        "degree": "程度副词句", "prep": "介词短语句", "compound": "复合句", "place_pos": "加地点句",
+        "place_neg": "否定+地点", "if": "条件句", "so": "so 连句", "not": "否定评价句", "review": "复习句",
+    }
+
+    def _slot_table_intents_fp(self, intents):
+        try:
+            return hashlib.md5(json.dumps(intents, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+        except Exception:
+            return ""
+
+    def _slot_table_group_prompt(self, tokens, russian_text, difficulty):
+        lines = [
+            "你是俄语教学句乐部课程的【意群分组】规划师。你只把 token 编号分组，禁止生成任何俄语文本。只输出 JSON，不要解释。",
+            "【核心句】（已俄语化）：", russian_text, "",
+            "【token 编号列表】（编号从 0 开始）：",
+        ]
+        for i, t in enumerate(tokens):
+            lines.append("%d: %s" % (i, t))
+        lines += [
+            "",
+            "【任务】按教学意群把全部编号分成若干组：",
+            "- 固定搭配/介词短语/不可拆短语整体一组（如 в парке、мой друг 各一组）",
+            "- 单个词可以单独一组",
+            "- 所有编号必须用且只用一次；每组编号必须连续",
+            "【难度粒度】easy=尽量拆细（词级）；medium=短语级（至少 2 词一组）；hard=整句一组",
+            "【每组角色 role】只能取：主语 / 谓语 / 补语 / 介词短语 / 副词 / 其他",
+            '【输出】{"groups":[{"indexes":[0],"role":"主语"},{"indexes":[1,2],"role":"补语"}]}',
+        ]
+        return "\n".join(lines)
+
+    def _slot_table_group_verify(self, groups, n):
+        """校验分组（与前端 verifyIndexes 同逻辑）：不重不漏、组内连续、编号界内；返回按首索引排序的 [{indexes,role}] 或 None。"""
+        if not isinstance(groups, list) or not groups:
+            return None
+        seen = set()
+        out = []
+        for g in groups:
+            idx = g.get("indexes") if isinstance(g, dict) else None
+            if not isinstance(idx, list) or not idx:
+                return None
+            for i in idx:
+                if not isinstance(i, int) or i < 0 or i >= n or i in seen:
+                    return None
+                seen.add(i)
+            for k in range(1, len(idx)):
+                if idx[k] != idx[k - 1] + 1:
+                    return None
+            out.append({"indexes": idx, "role": str(g.get("role") or "其他").strip()})
+        if len(seen) != n:
+            return None
+        return sorted(out, key=lambda x: x["indexes"][0])
+
+    def _slot_table_skeleton_steps(self, tokens, groups):
+        """由分组决策机器生成骨架意图（与前端 buildSkeletonIntent 逐字节一致）：
+        意群1 单出 → 每新意群单出 + 累积组合 → 最后完整句；单意群补完整句行。"""
+        n = len(tokens)
+        steps = []
+        g0 = groups[0]
+        steps.append({"kind": "part", "cardType": "积木", "source": "core",
+                      "tokensRef": [g0["indexes"][0], g0["indexes"][-1]], "role": g0.get("role") or "chunk", "groupId": "G_01"})
+        for i in range(1, len(groups)):
+            g = groups[i]
+            end = g["indexes"][-1]
+            steps.append({"kind": "part", "cardType": "积木", "source": "core",
+                          "tokensRef": [g["indexes"][0], end], "role": g.get("role") or "chunk", "groupId": "G_01"})
+            if i < len(groups) - 1:
+                steps.append({"kind": "part", "cardType": "积木", "source": "core",
+                              "tokensRef": [0, end], "role": "comb", "groupId": "G_01"})
+            else:
+                steps.append({"kind": "full", "cardType": "完整句", "template": "skeleton",
+                              "compose": [{"source": "core", "tokensRef": [0, n - 1]}], "groupId": "G_01"})
+        if steps[-1]["kind"] != "full":
+            steps.append({"kind": "full", "cardType": "完整句", "template": "skeleton",
+                          "compose": [{"source": "core", "tokensRef": [0, n - 1]}], "groupId": "G_01"})
+        return steps
+
+    def _slot_table_prefill(self, intents, tokens, pool):
+        """机械预填：确定每行 ru 是否已由机器定死（fixed）。
+        fixed 行：core 截取 / 模板固定词 / 不需形态变化的词池词（时间、地点、程度、否定等）。
+        !fixed 行：完整句（整句重写）、需变位/变格的词池词（谓语/补语）、复用块 —— AI 填 ru/zh/tag。"""
+        pool = pool if isinstance(pool, dict) else {}
+        rows = []
+        for st in intents:
+            row = {
+                "kind": st.get("kind"), "cardType": st.get("cardType"), "groupId": st.get("groupId") or "G_01",
+                "template": st.get("template"), "role": st.get("role") or "chunk", "tag": "",
+            }
+            fixed = None
+            src = st.get("source")
+            if st.get("kind") == "part":
+                if src == "core" and isinstance(st.get("tokensRef"), list) and len(st["tokensRef"]) == 2:
+                    s, e = st["tokensRef"]
+                    if 0 <= s <= e < len(tokens):
+                        fixed = " ".join(tokens[s:e + 1])
+                elif src == "template" and st.get("templateText"):
+                    fixed = str(st["templateText"]).strip()
+                elif src == "pool" and st.get("poolKey") in self._SLOT_TABLE_FIXED_POOL_KEYS:
+                    items = pool.get(st["poolKey"]) if isinstance(pool.get(st["poolKey"]), list) else []
+                    idx = st.get("poolIndex")
+                    if isinstance(idx, int) and 0 <= idx < len(items):
+                        fixed = str(items[idx].get("ru") or "").strip()
+            row["fixed"] = fixed if fixed else None
+            row["source"] = src
+            row["poolKey"] = st.get("poolKey")
+            row["reuseRef"] = st.get("reuseRef")
+            row["hint"] = st.get("hint")
+            rows.append(row)
+        return rows
+
+    def _slot_table_fill_prompt(self, russian_text, rows, pool=None):
+        pool_label = dict(self._POOL_KEYS)
+        lines = [
+            "你是俄语教学句乐部课程的【填词与翻译】。你只填每张学习卡片的内容，禁止改变卡片顺序和数量。只输出 JSON，不要解释。",
+            "【核心句】（已俄语化，骨架完整句由机器拼装保证等于它）：", russian_text, "",
+            "【规则】",
+            "- 俄语已定（fixed_ru）的行：你【禁止修改】俄语，只填 zh（准确中文翻译）和 tag（语法标签，如 主语 / 动词变位 / 名词宾格 / 否定句 / 主谓宾结构）。",
+            "- 俄语未定的行：你填 ru（语法完全正确、语义自然的俄语；换谓语/换宾语/评价句/复合句必须整句重写，禁止把新词硬塞进原句语序）+ zh + tag。",
+            "- 每行 zh 必须反映该行内容；完整句行的 zh 是整句翻译，禁止照抄其他句的翻译。",
+            "- tag 用中文简短提炼语法点（3-10 字）。",
+            "- 行数必须与输入一致，顺序不可调换。",
+            "",
+            "【逐行输入】",
+        ]
+        for i, r in enumerate(rows):
+            hint = r.get("hint") or ""
+            if not hint:
+                if r["kind"] == "part":
+                    if r["poolKey"]:
+                        hint = "词池词：" + pool_label.get(r["poolKey"], r["poolKey"])
+                    elif r["role"] == "comb":
+                        hint = "组合块"
+                    else:
+                        hint = "零件：" + (r["role"] or "chunk")
+                elif r["kind"] == "full":
+                    hint = "完整句：" + (self._SLOT_TABLE_TEMPLATE_ZH.get(r["template"]) or r["template"])
+            if r["fixed"]:
+                lines.append('%d. 卡片类型=%s 俄语已定="%s"（禁止修改） 提示=%s' % (i + 1, r["cardType"], r["fixed"], hint))
+            else:
+                lines.append('%d. 卡片类型=%s 提示=%s → 需填 ru/zh/tag' % (i + 1, r["cardType"], hint))
+        lines.append("")
+        lines.append('【输出】{"rows":[{"ru":"（仅未定俄语的行）","zh":"...","tag":"..."}]}（与输入行数一致）')
+        return "\n".join(lines)
+
+    def _handle_admin_segments_table_fill(self, data):
+        """POST /api/admin/segments/table-fill —— 句乐部式 6 列表格生成（路线B）。
+        入参: {sentence_hash, russian_text, tokens, difficulty, intents, pool?}
+        intents = 前端模板引擎（jlTableEngine.js）的意图序列；骨架部分若缺 tokensRef → 后端做 AI 分组决策后机器生成。
+        返回: {ok:true, rows:[{seq,cardType,ru,zh,tag,groupId}]} 或 {fallback:true, reason}。
+        幂等：缓存键 (sentence_hash, difficulty, intents_fp)；命中 ok 直接返回，不重复调 LLM。"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        sentence_hash = str(data.get("sentence_hash") or "").strip()
+        russian_text = str(data.get("russian_text") or "").strip()
+        tokens = data.get("tokens") or []
+        difficulty = str(data.get("difficulty") or "easy").strip()
+        intents = data.get("intents")
+        pool = data.get("pool")
+        if not isinstance(pool, dict):
+            pool = None
+        if difficulty not in ("easy", "medium", "hard"):
+            difficulty = "easy"
+        if not sentence_hash or not russian_text or not isinstance(tokens, list) or not tokens:
+            return self._json(400, {"ok": False, "error": "缺少 sentence_hash / russian_text / tokens"})
+        if not isinstance(intents, list) or not intents:
+            return self._json(400, {"ok": False, "error": "缺少 intents（模板引擎意图序列）"})
+        intents_fp = self._slot_table_intents_fp(intents)
+        # 1) 骨架分组：intents 骨架段缺 tokensRef → 后端 AI 分组 + 机器生成骨架（前端已给分组则跳过）
+        need_group = True
+        for st in intents:
+            if st.get("template") == "skeleton" and isinstance(st.get("compose"), list) and st["compose"] and st["compose"][0].get("tokensRef"):
+                need_group = False
+                break
+        # 2) 缓存幂等
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT rows, review_status, COALESCE(prompt_v,'v1') FROM sentence_slot_tables WHERE sentence_hash=%s AND difficulty=%s AND intents_fp=%s",
+                                (sentence_hash, difficulty, intents_fp))
+                    row = cur.fetchone()
+                    if row:
+                        return {"rows": row[0], "status": row[1], "prompt_v": row[2]}
+                    return {"rows": None, "status": None, "prompt_v": ""}
+            finally:
+                conn.close()
+        try:
+            r = _seg_execute(_q)
+        except Exception as e:
+            print("[slot_table] 缓存查询失败：", e)
+            return self._json(500, {"ok": False, "error": "缓存查询失败（数据库不可用）"})
+        if r.get("rows") and r.get("status") == "ok" and r.get("prompt_v") == SLOT_TABLE_PROMPT_V:
+            try:
+                cached_rows = json.loads(r["rows"])
+                if isinstance(cached_rows, list) and cached_rows:
+                    return self._json(200, {"ok": True, "cached": True, "rows": cached_rows})
+            except Exception:
+                pass
+        # 3) 生成（含骨架分组）
+        built_intents = intents
+        if need_group:
+            obj = call_llm(self._slot_table_group_prompt(tokens, russian_text, difficulty), "", json_mode=True)
+            if not obj:
+                return self._json(200, {"ok": False, "fallback": True, "reason": "group_ai_none"})
+            groups = self._slot_table_group_verify(obj.get("groups"), len(tokens))
+            if groups is None:
+                return self._json(200, {"ok": False, "fallback": True, "reason": "group_invalid", "raw": json.dumps(obj, ensure_ascii=False)[:400]})
+            skeleton = self._slot_table_skeleton_steps(tokens, groups)
+            # 骨架段边界：从首个 template='skeleton' 的 full 行往回都是 G_01 骨架行 → 整段替换
+            sk_end = -1
+            for i, st in enumerate(intents):
+                if st.get("template") == "skeleton":
+                    sk_end = i
+                    break
+            if sk_end >= 0:
+                built_intents = skeleton + [st for j, st in enumerate(intents) if j > sk_end]
+            else:
+                built_intents = skeleton + [st for st in intents if st.get("template") != "skeleton"]
+        # 4) 机械预填（fixed 判定）
+        prefilled = self._slot_table_prefill(built_intents, tokens, pool)
+        # 5) LLM-2 填词（失败重试 1 次）
+        obj2 = None
+        for _attempt in range(2):
+            obj2 = call_llm(self._slot_table_fill_prompt(russian_text, prefilled, pool), "", json_mode=True)
+            if obj2 and isinstance(obj2.get("rows"), list) and len(obj2["rows"]) == len(prefilled):
+                break
+            print("[slot_table] 填词失败(第%d次) 原始=%s" % (_attempt + 1, json.dumps(obj2, ensure_ascii=False)[:300] if obj2 else "ai_none"))
+            obj2 = None
+        if obj2 is None:
+            return self._json(200, {"ok": False, "fallback": True, "reason": "fill_failed"})
+        # 6) 组装（fixed 行 ru 以机器值为准，AI 若篡改直接覆盖，不判失败重试）+ 骨架完整句防御
+        ai_rows = obj2["rows"]
+        out_rows = []
+        for i, r in enumerate(prefilled):
+            ai = ai_rows[i] if isinstance(ai_rows[i], dict) else {}
+            ru = r["fixed"]
+            if not ru:
+                ru = str(ai.get("ru") or "").strip()
+            zh = str(ai.get("zh") or "").strip()
+            tag = str(ai.get("tag") or "").strip() or r["role"] or ""
+            out_rows.append({"seq": i + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
+        sk_ru = ""
+        for row in out_rows:
+            if row["cardType"] == "完整句":
+                sk_ru = row["ru"]
+                break
+        if sk_ru and sk_ru != russian_text:
+            # 骨架完整句被篡改（理论不发生：骨架 full 行 ru 是机械拼装；防御兜底回写）
+            sk_ru2 = " ".join(tokens)
+            for row in out_rows:
+                if row["cardType"] == "完整句":
+                    row["ru"] = sk_ru2
+                    break
+        # 7) 写缓存（幂等 upsert）
+        rows_json = json.dumps(out_rows, ensure_ascii=False)
+
+        def _w():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    pid = "slott_" + hashlib.md5((sentence_hash + "|" + difficulty + "|" + intents_fp).encode("utf-8")).hexdigest()[:20]
+                    cur.execute(
+                        "INSERT INTO sentence_slot_tables (id, sentence_hash, difficulty, sentence, intents_fp, rows, review_status, prompt_v, created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,'ok',%s,%s) "
+                        "ON DUPLICATE KEY UPDATE rows=VALUES(rows), review_status='ok', prompt_v=VALUES(prompt_v)",
+                        (pid, sentence_hash, difficulty, russian_text, intents_fp, rows_json, SLOT_TABLE_PROMPT_V, int(time.time() * 1000)))
+                    conn.commit()
+            finally:
+                conn.close()
+        try:
+            _seg_execute(_w)
+        except Exception as e:
+            print("[slot_table] 写缓存失败：", e)
+        return self._json(200, {"ok": True, "rows": out_rows})
+
     def _handle_segments_read(self, params):
         """GET /api/segments?course_id=&unit_id= —— 公开读课时语块（按句+难度分组，供连词成句练习页）。
         对外字段统一 status（映射自 review_status）；占位行（未生成）→ status='generating'、segments=[]；
@@ -6312,6 +6600,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_plan(data)
             if path == "/api/admin/segments/pool":
                 return self._handle_admin_segments_pool(data)
+            if path == "/api/admin/segments/table-fill":
+                return self._handle_admin_segments_table_fill(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":
