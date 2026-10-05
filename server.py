@@ -5229,6 +5229,9 @@ class Handler(BaseHTTPRequestHandler):
             _tpl = _r.get("template") or ""
             if not _mru and _r.get("comb"):
                 _mru = self._slot_table_machine_comb(_r.get("role"), mctx)
+            if not _mru and _r.get("kind") == "part" and _r.get("role") == "补语" and _r.get("source") == "reuse":
+                # 复用骨架宾语（predicate_swap 段）：取 ctx.obj（骨架补语/宾语已机器确定）
+                _mru = mctx.get("obj") or ""
             if not _mru and _r.get("kind") == "full":
                 if _tpl == "skeleton":
                     _comp = _r.get("compose") or []
