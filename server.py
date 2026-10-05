@@ -82,7 +82,7 @@ CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN") or ""
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
 # ---- P4-B 句乐部 plan Prompt 版本：Prompt 升级后旧缓存自动失效重建（避免旧错误结果一直命中） ----
-PLAN_PROMPT_V = "v3.1"
+PLAN_PROMPT_V = "v3.2"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
