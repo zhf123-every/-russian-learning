@@ -5203,10 +5203,33 @@ class Handler(BaseHTTPRequestHandler):
                 built_intents = skeleton + [st for st in intents if st.get("template") != "skeleton"]
         # 4) 机械预填（fixed 判定）
         prefilled = self._slot_table_prefill(built_intents, tokens, pool)
-        # 5) LLM-2 填词（失败重试 1 次）
+        # 5) LLM-2 填词（失败重试 1 次；行多时拆批并行——单次大 JSON 生成可能超 Render 60s 网关限制）
+        CHUNK = 28
+
+        def _fill_chunk(rows_batch):
+            obj = call_llm(self._slot_table_fill_prompt(russian_text, rows_batch, pool), "", json_mode=True)
+            if obj and isinstance(obj.get("rows"), list) and len(obj["rows"]) == len(rows_batch):
+                return obj["rows"]
+            return None
+
         obj2 = None
         for _attempt in range(2):
-            obj2 = call_llm(self._slot_table_fill_prompt(russian_text, prefilled, pool), "", json_mode=True)
+            if len(prefilled) <= CHUNK:
+                chunk_rows = _fill_chunk(prefilled)
+                if chunk_rows is not None:
+                    obj2 = {"rows": chunk_rows}
+            else:
+                chunks = [prefilled[i:i + CHUNK] for i in range(0, len(prefilled), CHUNK)]
+                results = [None] * len(chunks)
+                try:
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=len(chunks)) as ex:
+                        for k, r2 in enumerate(ex.map(_fill_chunk, chunks)):
+                            results[k] = r2
+                except Exception:
+                    results = [None] * len(chunks)
+                if all(r2 is not None for r2 in results):
+                    obj2 = {"rows": [row for r2 in results for row in r2]}
             if obj2 and isinstance(obj2.get("rows"), list) and len(obj2["rows"]) == len(prefilled):
                 break
             print("[slot_table] 填词失败(第%d次) 原始=%s" % (_attempt + 1, json.dumps(obj2, ensure_ascii=False)[:300] if obj2 else "ai_none"))
