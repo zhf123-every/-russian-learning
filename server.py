@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v11"
+SLOT_TABLE_PROMPT_V = "v12"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4819,7 +4819,7 @@ class Handler(BaseHTTPRequestHandler):
         "object_neg": "换宾语否定句", "evaluation": "评价句", "evaluation_ext": "评价句扩展",
         "degree": "程度副词句", "prep": "介词短语句", "compound": "复合句", "place_pos": "加地点句",
         "place_neg": "否定+地点", "if": "条件句", "so": "so 连句", "not": "否定评价句", "review": "复习句",
-        "freq_neg": "否定+频率",
+        "freq_neg": "否定+频率", "swap_neg": "换宾语否定句",
     }
 
     def _slot_table_intents_fp(self, intents):
@@ -4919,7 +4919,9 @@ class Handler(BaseHTTPRequestHandler):
                     items = pool.get(st["poolKey"]) if isinstance(pool.get(st["poolKey"]), list) else []
                     idx = st.get("poolIndex")
                     if isinstance(idx, int) and 0 <= idx < len(items):
-                        fixed = str(items[idx].get("ru") or "").strip()
+                        # 词池条目可带扩展字段（如 objects: {ru:'еду', inf:'есть'}）；step 指定 poolField 时取其字段
+                        _it = items[idx] if isinstance(items[idx], dict) else {}
+                        fixed = str((_it.get(st.get("poolField") or "ru") or _it.get("ru") or "")).strip()
             row["fixed"] = fixed if fixed else None
             row["source"] = src
             row["poolKey"] = st.get("poolKey")
@@ -5004,6 +5006,52 @@ class Handler(BaseHTTPRequestHandler):
         if template == "time_neg":
             # 基于最近否定句 + 时间（G_04 基础否定；G_05 带地点否定 → 天然叠加，句乐部节奏）
             return (" ".join(x for x in (last_neg, time_adv) if x)).strip()
+        if template == "swap_neg":
+            # 换宾语段否定句（句乐部 46 结构）：主语 + 否定组合 + 不定式 + 宾语 + 时间，不依赖 last_neg
+            parts = [sub]
+            nc = ctx.get("neg_comb") or ""
+            if nc:
+                parts.append(nc)
+            else:
+                parts.append(neg)
+                if pred:
+                    parts.append(pred)
+            inf = ctx.get("inf") or ""
+            obj = ctx.get("obj") or ""
+            if inf and obj:
+                if not obj.startswith(inf):
+                    parts.append(inf)
+                parts.append(obj)
+            elif inf:
+                parts.append(inf)
+            elif obj:
+                parts.append(obj)
+            if time_adv:
+                parts.append(time_adv)
+            return (" ".join(parts)).strip()
+        if template == "freq_neg":
+            # 频率段否定句：当前状态直拼（主语+否定组合+不定式+宾语+频率），避免 last_neg_base 残留旧宾语
+            parts = [sub]
+            nc = ctx.get("neg_comb") or ""
+            if nc:
+                parts.append(nc)
+            else:
+                parts.append(neg)
+                if pred:
+                    parts.append(pred)
+            inf = ctx.get("inf") or ""
+            obj = ctx.get("obj") or ""
+            if inf and obj:
+                if not obj.startswith(inf):
+                    parts.append(inf)
+                parts.append(obj)
+            elif inf:
+                parts.append(inf)
+            elif obj:
+                parts.append(obj)
+            if time_adv:
+                parts.append(time_adv)
+            return (" ".join(parts)).strip()
         if template == "freq_neg":
             # 频率段专用：基础否定句 + 频率（避免 "сегодня каждый день" 残留）
             return (" ".join(x for x in (last_neg_base, time_adv) if x)).strip()
