@@ -82,7 +82,7 @@ CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN") or ""
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 
 # ---- P4-B 句乐部 plan Prompt 版本：Prompt 升级后旧缓存自动失效重建（避免旧错误结果一直命中） ----
-PLAN_PROMPT_V = "v3"
+PLAN_PROMPT_V = "v3.1"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4504,7 +4504,7 @@ class Handler(BaseHTTPRequestHandler):
                         lines.append("  [%s] %s" % (zh_label, shown))
         lines.append("")
         lines.append("【输出格式】groups = 教学组序列，每组 = 一条滚雪球路径：")
-        lines.append('{"groups":[{"title":"骨架","steps":[{"add":"Это","zh":"这","type":"pronoun"},{"add":"мой","zh":"我的","type":"adj"}]}],"translation":"整句中文"}')
+        lines.append('{"groups":[{"title":"骨架","steps":[{"add":"Это","zh":"这","type":"pronoun"},{"add":"мой","zh":"我的","type":"adj"},{"add":"Это мой друг","zh":"这是我的朋友","type":"sentence"}]},{"title":"否定","steps":[{"add":"не","zh":"不","type":"neg"},{"add":"мой друг","zh":"我的朋友","type":"chunk"},{"add":"Это не мой друг","zh":"这不是我的朋友","type":"sentence"}]}],"translation":"这是我的朋友"}')
         lines.append("")
         lines.append("【当前难度（决定块粒度，必须遵守）】%s" % difficulty)
         lines.append("【难度粒度规则】")
@@ -4536,8 +4536,9 @@ class Handler(BaseHTTPRequestHandler):
         lines.append("   e. 每个变体句都是**新句子**，允许增减词、改变词序，只要语义是目标句的自然变形。")
         lines.append("8. 【中文翻译硬规则】")
         lines.append("   a. 每步 zh = 该步 add 俄语的【准确中文翻译】，禁止照抄别的步骤的翻译。")
-        lines.append("   b. 变体句的中文必须反映该变体语义：否定句要翻出\u201c不\u201d，时间句要翻出时间词，换谓语句要翻出新动词（«Это мой друг» → 换谓语变体句中文是\u201c我看见我的朋友\u201d，不能还是\u201c这是我的朋友\u201d）。")
-        lines.append("   c. translation = 目标句整句中文。")
+        lines.append("   b. **translation 只用于骨架组（第1组）末步的 zh**；【所有变体组末步的 zh 必须与 translation 不同】，必须反映该变体的语义：否定句翻\u201c不\u201d、时间句翻时间词、换谓语句翻新动词。")
+        lines.append("   c. 例子：translation=「这是我的朋友」；否定组末步 zh 必须是「这不是我的朋友」，不能还是「这是我的朋友」；换谓语组末步 zh 必须是「我看见我的朋友」。")
+        lines.append("   d. 实在无法准确翻译某步时，zh 允许留空，但【禁止把其他句子的中文填进来】。")
         lines.append("9. 每组 title 用中文简短说明（骨架 / 否定 / 加时间 / 换谓语 / 换补语 / 评价句 / 程度 / 介词 / 复合句 / 地点）。")
         lines.append("10. 每句 3-6 组为宜（骨架 + 2-4 个变体，从白名单挑 2-4 类），不要超过 8 组；变体类型尽量不重复。")
         return "\n".join(lines)
@@ -4574,6 +4575,18 @@ class Handler(BaseHTTPRequestHandler):
         # 强校验：骨架组（第1组）末步块 == 目标句（俄语化压缩空白后）——句乐部机制：末步 add = 完整句
         if built[0]["final"] != russian_text:
             return None, "skeleton_concat_mismatch"
+        # 变体组强校验（Prompt v3.1 配套）：末步不能重复原句；末步中文不能照抄 translation（AI 常犯）
+        translation = str(obj.get("translation") or "").strip()
+        skeleton_final = built[0]["final"]
+        for gi in range(1, len(built)):
+            final = built[gi]["final"]
+            if final == skeleton_final:
+                return None, "variant_dup_sentence"
+            last_zh = str(built[gi]["steps"][-1].get("zh") or "").strip()
+            if not last_zh:
+                return None, "variant_zh_empty"
+            if translation and last_zh == translation:
+                return None, "variant_zh_same"
         return built, None
 
     def _handle_admin_segments_plan(self, data):
@@ -4624,12 +4637,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "cached": True, "groups": cached.get("groups"), "translation": cached.get("translation") or ""})
             except Exception:
                 pass
-        obj = call_llm(self._slot_build_prompt(tokens, difficulty, russian_text, pool), "", json_mode=True)
-        if not obj:
-            return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
-        built, reason = self._slot_verify_and_build(obj, russian_text, tokens, difficulty)
+        # 校验失败重试策略：AI 一次不听话（变体中文照抄/硬塞词）→ 重试 1 次；仍失败才 fallback
+        obj = None
+        built = None
+        reason = ""
+        for _attempt in range(2):
+            obj = call_llm(self._slot_build_prompt(tokens, difficulty, russian_text, pool), "", json_mode=True)
+            if not obj:
+                return self._json(200, {"ok": False, "fallback": True, "reason": "ai_none"})
+            built, reason = self._slot_verify_and_build(obj, russian_text, tokens, difficulty)
+            if built is not None:
+                break
+            print("[slots] plan 校验失败(第%d次) reason=%s tokens=%d 原始返回=%s" % (_attempt + 1, reason, len(tokens), json.dumps(obj, ensure_ascii=False)[:400]))
         if built is None:
-            print("[slots] plan 校验失败 reason=%s tokens=%d 原始返回=%s" % (reason, len(tokens), json.dumps(obj, ensure_ascii=False)[:600]))
             return self._json(200, {"ok": False, "fallback": True, "reason": reason, "raw": json.dumps(obj, ensure_ascii=False)[:500]})
         translation = str(obj.get("translation") or "").strip()
         plan_json = json.dumps({"groups": built, "translation": translation}, ensure_ascii=False)
