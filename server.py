@@ -5233,7 +5233,16 @@ class Handler(BaseHTTPRequestHandler):
                 # 复用骨架宾语（predicate_swap 段）：取 ctx.obj（骨架补语/宾语已机器确定）
                 _mru = mctx.get("obj") or ""
             if not _mru and _r.get("kind") == "full":
-                if _tpl == "skeleton":
+                if _tpl == "review":
+                    # 复习行：按 hint 模板名复制已生成完整句（机器已存 full_by_template）
+                    _m = _re.search(r"复习[:：]\s*([a-z_]+)", _r.get("hint") or "")
+                    _src_tpl = _m.group(1) if _m else ""
+                    _src = mctx.get("full_by_template", {}).get(_src_tpl)
+                    if _src:
+                        _mru = _src["ru"]
+                    elif mctx.get("last_full"):
+                        _mru = mctx["last_full"]
+                elif _tpl == "skeleton":
                     _comp = _r.get("compose") or []
                     if _comp and isinstance(_comp[0].get("tokensRef"), list) and len(_comp[0]["tokensRef"]) == 2:
                         _s0, _e0 = _comp[0]["tokensRef"]
@@ -5248,22 +5257,13 @@ class Handler(BaseHTTPRequestHandler):
                 _r["fixed"] = _mru
             if _r.get("kind") == "part":
                 self._slot_table_ctx_update(mctx, _r.get("role"), _mru, _r.get("source"), _r.get("poolKey"), _r.get("tokensRef"))
-            elif _r.get("kind") == "full" and _mru:
-                if _tpl == "review":
-                    _m = _re.search(r"复习[:：]\s*([a-z_]+)", _r.get("hint") or "")
-                    _src_tpl = _m.group(1) if _m else ""
-                    _src = mctx.get("full_by_template", {}).get(_src_tpl)
-                    if _src:
-                        _r["fixed"] = _src["ru"]
-                    elif mctx.get("last_full"):
-                        _r["fixed"] = mctx["last_full"]
-                else:
-                    mctx["last_full"] = _mru
-                    mctx["full_by_template"][_tpl] = {"ru": _mru}
-                    if _tpl in self._SLOT_TABLE_NEG_TEMPLATES:
-                        mctx["last_neg"] = _mru
-                    if _tpl in ("evaluation", "degree", "evaluation_ext", "not"):
-                        mctx["last_eval"] = _mru
+            elif _r.get("kind") == "full" and _mru and _tpl != "review":
+                mctx["last_full"] = _mru
+                mctx["full_by_template"][_tpl] = {"ru": _mru}
+                if _tpl in self._SLOT_TABLE_NEG_TEMPLATES:
+                    mctx["last_neg"] = _mru
+                if _tpl in ("evaluation", "degree", "evaluation_ext", "not"):
+                    mctx["last_eval"] = _mru
         # 5) LLM-2 填词（失败重试 1 次；行多时拆批并行——单次大 JSON 生成可能超 Render 60s 网关限制）
         CHUNK = 28
 
