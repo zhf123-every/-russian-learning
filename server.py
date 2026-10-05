@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v8"
+SLOT_TABLE_PROMPT_V = "v9"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4970,6 +4970,7 @@ class Handler(BaseHTTPRequestHandler):
         time_adv = ctx.get("time_adv") or ""
         place = ctx.get("place") or ""
         evalw = ctx.get("eval") or ""
+        last_affirm = ctx.get("last_affirm") or ""  # 最近肯定完整句（time_pos/place_pos 必须基于肯定句）
         last_full = ctx.get("last_full") or ""
         last_neg = ctx.get("last_neg") or ""
         last_eval = ctx.get("last_eval") or ""
@@ -4977,20 +4978,29 @@ class Handler(BaseHTTPRequestHandler):
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template in ("object_pos", "predicate_pos"):
             inf = ctx.get("inf") or ""
-            if template.startswith("object") and inf:
-                return (" ".join(x for x in (sub, pred, inf, obj) if x)).strip()
+            if template.startswith("object"):
+                if inf and obj.startswith(inf):
+                    # 宾语已含不定式（делать это）→ 不重复拼 inf，避免 "делать делать это"
+                    return (" ".join(x for x in (sub, pred, obj) if x)).strip()
+                if inf:
+                    return (" ".join(x for x in (sub, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, pred, obj) if x)).strip()
         if template in ("object_neg", "predicate_neg"):
             inf = ctx.get("inf") or ""
-            if template.startswith("object") and inf:
-                return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
+            if template.startswith("object"):
+                if inf and obj.startswith(inf):
+                    return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
+                if inf:
+                    return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template == "time_pos":
-            return (" ".join(x for x in (last_full, time_adv) if x)).strip()
+            base = last_affirm or last_full
+            return (" ".join(x for x in (base, time_adv) if x)).strip()
         if template == "time_neg":
             return (" ".join(x for x in (last_neg, time_adv) if x)).strip()
         if template == "place_pos":
-            return (" ".join(x for x in (last_full, place) if x)).strip()
+            base = last_affirm or last_full
+            return (" ".join(x for x in (base, place) if x)).strip()
         if template == "place_neg":
             return (" ".join(x for x in (last_neg, place) if x)).strip()
         if template == "evaluation":
@@ -5060,44 +5070,12 @@ class Handler(BaseHTTPRequestHandler):
 
     _SLOT_TABLE_NEG_TEMPLATES = ("negation", "time_neg", "place_neg", "predicate_neg", "object_neg")
 
-    # ============ 同组完整句互重重填（if/so 由 AI 填 → 重复时单独重填 1 次 → 仍重复 fallback） ============
+    # ============ 同组完整句互重重填（禁用 AI 造词：任何重复一律 fallback dup_full，前端机械兜底 pending） ============
+    # ⚠️ 2026-10-06 根因修复：此函数此前让 LLM 重写整句（如 "в библиотеке нет…" / "я не успеваю… по вечерам"），
+    # 是表格野词 + 中文错位的最后入口。机器拼装修复（time_pos 基于 last_affirm）后同组重复应消失；
+    # 若个别句子仍重复 → 直接返回 None → 整次 fallback（前端机械兜底表完全干净），绝不 AI 造词。
     def _slot_table_retry_dup(self, prefilled, out_rows, dup_idx, russian_text):
-        lines = [
-            "你是俄语教学填词器。下面 %d 行完整句与各自组内已有句子重复，请给每行一个【全新】的俄语完整句（语法完全正确、语义自然）。" % len(dup_idx),
-            "【铁律】新句不得等于核心句（%s）；不得与同组任何完整句重复；不得照抄中文。只输出 JSON。" % russian_text,
-            "",
-        ]
-        for k, i in enumerate(dup_idx):
-            lines.append("%d. 模板=%s 组=%s（原句已被拒绝）" % (k + 1, prefilled[i].get("template") or "", prefilled[i].get("groupId") or ""))
-        lines.append('【输出】{"rows":[{"ru":"...","zh":"...","tag":"..."}]}')
-        obj = call_llm("\n".join(lines), "", json_mode=True)
-        if not obj or not isinstance(obj.get("rows"), list):
-            return None
-        new_rows = [dict(r) for r in out_rows]
-        seen = {}
-        for k, i in enumerate(dup_idx):
-            ai = obj["rows"][k] if k < len(obj["rows"]) and isinstance(obj["rows"][k], dict) else None
-            if not ai:
-                return None
-            ru = str(ai.get("ru") or "").strip()
-            g = new_rows[i]["groupId"]
-            s = seen.setdefault(g, set())
-            if not ru or ru == russian_text or ru in s:
-                return None
-            s.add(ru)
-            new_rows[i]["ru"] = ru
-            new_rows[i]["zh"] = str(ai.get("zh") or "").strip() or new_rows[i]["zh"]
-            new_rows[i]["tag"] = str(ai.get("tag") or "").strip() or new_rows[i]["tag"]
-        # 与整表其他完整句复检（含重填行彼此、与未重填行）
-        all_ru = {}
-        for row in new_rows:
-            if row["cardType"] != "完整句":
-                continue
-            s = all_ru.setdefault(row["groupId"], set())
-            if row["ru"] in s:
-                return None
-            s.add(row["ru"])
-        return new_rows
+        return None
 
     def _slot_table_fill_prompt(self, russian_text, rows, pool=None):
         pool_label = dict(self._POOL_KEYS)
@@ -5222,7 +5200,7 @@ class Handler(BaseHTTPRequestHandler):
         #      → fill_prompt 会把所有行视为"俄语已定"→ AI 无法输出 ru（if/so 复合句除外，保留 AI ru）。
         mctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                 "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
-                "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {},
+                "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_eval": "", "full_by_template": {},
                 "tokens": tokens, "last_comb": "", "pred_zh": ""}
         for _r in prefilled:
             _mru = _r.get("fixed") or ""
@@ -5269,6 +5247,8 @@ class Handler(BaseHTTPRequestHandler):
                 mctx["full_by_template"][_tpl] = {"ru": _mru}
                 if _tpl in self._SLOT_TABLE_NEG_TEMPLATES:
                     mctx["last_neg"] = _mru
+                else:
+                    mctx["last_affirm"] = _mru  # 最近肯定句（time_pos/place_pos 基准）
                 if _tpl in ("evaluation", "degree", "evaluation_ext", "not"):
                     mctx["last_eval"] = _mru
         # 5) LLM-2 填词（失败重试 1 次；行多时拆批并行——单次大 JSON 生成可能超 Render 60s 网关限制）
@@ -5308,7 +5288,7 @@ class Handler(BaseHTTPRequestHandler):
         ai_rows = obj2["rows"]
         ctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
-               "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {},
+               "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_eval": "", "full_by_template": {},
                "tokens": tokens, "last_comb": "", "pred_zh": ""}
         out_rows = []
         for i, r in enumerate(prefilled):
@@ -5366,6 +5346,8 @@ class Handler(BaseHTTPRequestHandler):
                         ctx["full_by_template"][tpl] = {"ru": ru, "zh": zh}
                         if tpl in self._SLOT_TABLE_NEG_TEMPLATES:
                             ctx["last_neg"] = ru
+                        else:
+                            ctx["last_affirm"] = ru  # 最近肯定句（time_pos/place_pos 基准）
                         if tpl in ("evaluation", "degree", "evaluation_ext", "not"):
                             ctx["last_eval"] = ru
             out_rows.append({"seq": i + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
