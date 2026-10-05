@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v5"
+SLOT_TABLE_PROMPT_V = "v6"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -5218,7 +5218,7 @@ class Handler(BaseHTTPRequestHandler):
         ctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
                "last_full": "", "last_full_zh": "", "last_neg": "", "last_eval": "", "full_by_template": {},
-               "tokens": tokens, "last_comb": ""}
+               "tokens": tokens, "last_comb": "", "pred_zh": ""}
         out_rows = []
         for i, r in enumerate(prefilled):
             ai = ai_rows[i] if isinstance(ai_rows[i], dict) else {}
@@ -5243,6 +5243,11 @@ class Handler(BaseHTTPRequestHandler):
             tag = str(ai.get("tag") or "").strip() or r["role"] or ""
             if r.get("comb"):
                 tag = "组合块"  # 组合块 tag 机器固定，AI 填的 tag 不稳定
+                # 否定组合块 zh 机器兜底：не X → "不"+谓语中文（AI 常漏"不"）
+                if r.get("role") in ("组合", "否定组合", "comb") and ru.startswith("не ") and ctx.get("pred_zh") and not zh.startswith("不"):
+                    zh = "不" + ctx["pred_zh"]
+            if r.get("kind") == "part" and r.get("role") == "谓语" and zh:
+                ctx["pred_zh"] = zh
             if r.get("kind") == "part":
                 self._slot_table_ctx_update(ctx, r.get("role"), ru, r.get("source"), r.get("poolKey"), r.get("tokensRef"))
             elif r.get("kind") == "full":
