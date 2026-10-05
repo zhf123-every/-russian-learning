@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v10"
+SLOT_TABLE_PROMPT_V = "v11"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4819,6 +4819,7 @@ class Handler(BaseHTTPRequestHandler):
         "object_neg": "换宾语否定句", "evaluation": "评价句", "evaluation_ext": "评价句扩展",
         "degree": "程度副词句", "prep": "介词短语句", "compound": "复合句", "place_pos": "加地点句",
         "place_neg": "否定+地点", "if": "条件句", "so": "so 连句", "not": "否定评价句", "review": "复习句",
+        "freq_neg": "否定+频率",
     }
 
     def _slot_table_intents_fp(self, intents):
@@ -4973,39 +4974,45 @@ class Handler(BaseHTTPRequestHandler):
         time_adv = ctx.get("time_adv") or ""
         place = ctx.get("place") or ""
         evalw = ctx.get("eval") or ""
-        last_affirm = ctx.get("last_affirm") or ""  # 最近肯定完整句（time_pos/place_pos 必须基于肯定句）
+        last_base = ctx.get("last_base") or ""  # 最近基础肯定句（无时间/地点/频率状语）
+        last_neg_base = ctx.get("last_neg_base") or ""  # 最近基础否定句（无状语）
         last_full = ctx.get("last_full") or ""
-        last_neg = ctx.get("last_neg") or ""
+        last_neg = ctx.get("last_neg") or ""  # 最近否定句（含已叠加状语 → time_neg 叠加基准）
         last_eval = ctx.get("last_eval") or ""
         if template == "negation":
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template in ("object_pos", "predicate_pos"):
             inf = ctx.get("inf") or ""
-            if template.startswith("object"):
-                if inf and obj.startswith(inf):
-                    # 宾语已含不定式（делать это）→ 不重复拼 inf，避免 "делать делать это"
-                    return (" ".join(x for x in (sub, pred, obj) if x)).strip()
-                if inf:
-                    return (" ".join(x for x in (sub, pred, inf, obj) if x)).strip()
+            if inf and obj.startswith(inf):
+                # 宾语已含不定式（делать это）→ 不重复拼 inf，避免 "делать делать это"
+                return (" ".join(x for x in (sub, pred, obj) if x)).strip()
+            if inf:
+                # 谓语/宾语换新后保留不定式短语（句乐部 I want to do it 结构）
+                return (" ".join(x for x in (sub, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, pred, obj) if x)).strip()
         if template in ("object_neg", "predicate_neg"):
             inf = ctx.get("inf") or ""
-            if template.startswith("object"):
-                if inf and obj.startswith(inf):
-                    return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
-                if inf:
-                    return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
+            if inf and obj.startswith(inf):
+                return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
+            if inf:
+                return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
         if template == "time_pos":
-            base = last_affirm or last_full
+            # 基于基础肯定句 + 时间（避免 "сегодня каждый день" 等状语残留叠加）
+            base = last_base or last_full
             return (" ".join(x for x in (base, time_adv) if x)).strip()
         if template == "time_neg":
+            # 基于最近否定句 + 时间（G_04 基础否定；G_05 带地点否定 → 天然叠加，句乐部节奏）
             return (" ".join(x for x in (last_neg, time_adv) if x)).strip()
+        if template == "freq_neg":
+            # 频率段专用：基础否定句 + 频率（避免 "сегодня каждый день" 残留）
+            return (" ".join(x for x in (last_neg_base, time_adv) if x)).strip()
         if template == "place_pos":
-            base = last_affirm or last_full
+            base = last_base or last_full
             return (" ".join(x for x in (base, place) if x)).strip()
         if template == "place_neg":
-            return (" ".join(x for x in (last_neg, place) if x)).strip()
+            # 基于基础否定句 + 地点（避免把前面时间词带进来 → "сегодня здесь"）
+            return (" ".join(x for x in (last_neg_base, place) if x)).strip()
         if template == "evaluation":
             return ("Это " + evalw).strip() if evalw else ""
         if template == "degree":
@@ -5203,7 +5210,7 @@ class Handler(BaseHTTPRequestHandler):
         #      → fill_prompt 会把所有行视为"俄语已定"→ AI 无法输出 ru（if/so 复合句除外，保留 AI ru）。
         mctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                 "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
-                "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_eval": "", "full_by_template": {},
+                "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_base": "", "last_neg_base": "", "last_eval": "", "full_by_template": {},
                 "tokens": tokens, "last_comb": "", "pred_zh": ""}
         for _r in prefilled:
             _mru = _r.get("fixed") or ""
@@ -5250,8 +5257,12 @@ class Handler(BaseHTTPRequestHandler):
                 mctx["full_by_template"][_tpl] = {"ru": _mru}
                 if _tpl in self._SLOT_TABLE_NEG_TEMPLATES:
                     mctx["last_neg"] = _mru
+                    if _tpl in ("negation", "object_neg", "predicate_neg"):
+                        mctx["last_neg_base"] = _mru  # 基础否定句（place_neg/freq_neg 基准）
                 else:
-                    mctx["last_affirm"] = _mru  # 最近肯定句（time_pos/place_pos 基准）
+                    mctx["last_affirm"] = _mru
+                    if _tpl in ("skeleton", "object_pos", "predicate_pos"):
+                        mctx["last_base"] = _mru  # 基础肯定句（time_pos/place_pos 基准）
                 if _tpl in ("evaluation", "degree", "evaluation_ext", "not"):
                     mctx["last_eval"] = _mru
         # 5) LLM-2 填词（失败重试 1 次；行多时拆批并行——单次大 JSON 生成可能超 Render 60s 网关限制）
@@ -5291,7 +5302,7 @@ class Handler(BaseHTTPRequestHandler):
         ai_rows = obj2["rows"]
         ctx = {"sub": (tokens[0] if tokens else ""), "pred": "", "obj": "", "neg": "", "neg_comb": "", "inf": "",
                "time_adv": "", "place": "", "eval": "", "deg": "", "ext": "", "conn": "", "nominal_pred": False,
-               "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_eval": "", "full_by_template": {},
+               "last_full": "", "last_full_zh": "", "last_neg": "", "last_affirm": "", "last_base": "", "last_neg_base": "", "last_eval": "", "full_by_template": {},
                "tokens": tokens, "last_comb": "", "pred_zh": ""}
         out_rows = []
         for i, r in enumerate(prefilled):
@@ -5349,8 +5360,12 @@ class Handler(BaseHTTPRequestHandler):
                         ctx["full_by_template"][tpl] = {"ru": ru, "zh": zh}
                         if tpl in self._SLOT_TABLE_NEG_TEMPLATES:
                             ctx["last_neg"] = ru
+                            if tpl in ("negation", "object_neg", "predicate_neg"):
+                                ctx["last_neg_base"] = ru
                         else:
-                            ctx["last_affirm"] = ru  # 最近肯定句（time_pos/place_pos 基准）
+                            ctx["last_affirm"] = ru
+                            if tpl in ("skeleton", "object_pos", "predicate_pos"):
+                                ctx["last_base"] = ru
                         if tpl in ("evaluation", "degree", "evaluation_ext", "not"):
                             ctx["last_eval"] = ru
             out_rows.append({"seq": i + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
