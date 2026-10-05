@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v3"
+SLOT_TABLE_PROMPT_V = "v4"
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4834,12 +4834,13 @@ class Handler(BaseHTTPRequestHandler):
         lines += [
             "",
             "【任务】按教学意群把全部编号分成若干组：",
+            "- 【铁律】谓语（动词变位/谓语性副词，如 люблю、хочу、нужно）必须【单独一组】，禁止与宾语/补语合并",
             "- 固定搭配/介词短语/不可拆短语整体一组（如 в парке、мой друг 各一组）",
-            "- 单个词可以单独一组",
+            "- 宾语/补语/时间/地点可单独或合并成意群",
             "- 所有编号必须用且只用一次；每组编号必须连续",
             "【难度粒度】easy=尽量拆细（词级）；medium=短语级（至少 2 词一组）；hard=整句一组",
             "【每组角色 role】只能取：主语 / 谓语 / 补语 / 介词短语 / 副词 / 其他",
-            '【输出】{"groups":[{"indexes":[0],"role":"主语"},{"indexes":[1,2],"role":"补语"}]}',
+            '【输出】{"groups":[{"indexes":[0],"role":"主语"},{"indexes":[1],"role":"谓语"},{"indexes":[2,3],"role":"补语"}]}',
         ]
         return "\n".join(lines)
 
@@ -4998,7 +4999,20 @@ class Handler(BaseHTTPRequestHandler):
         if not ru:
             return
         if role == "谓语":
-            ctx["pred"] = ru
+            # 多词谓语意群（LLM 把宾语并入谓语组，如 [1,2]=люблю еду）→ 拆分：pred=首词，obj=其余
+            if ctx.get("tokens") and tokens_ref and len(tokens_ref) == 2:
+                s0, e0 = tokens_ref
+                ts = ctx["tokens"]
+                if 0 <= s0 <= e0 < len(ts):
+                    if e0 > s0:
+                        ctx["pred"] = ts[s0]
+                        rest = ts[s0 + 1:e0 + 1]
+                        if rest and not ctx.get("obj"):
+                            ctx["obj"] = " ".join(rest)
+                    else:
+                        ctx["pred"] = ts[s0]
+            else:
+                ctx["pred"] = ru
             ctx["nominal_pred"] = ru in ("нужно", "надо", "можно", "нельзя")
         elif role == "补语":
             if source == "template":
