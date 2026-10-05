@@ -5088,7 +5088,7 @@ class Handler(BaseHTTPRequestHandler):
                     if r["poolKey"]:
                         hint = "词池词：" + pool_label.get(r["poolKey"], r["poolKey"])
                     elif r["role"] == "comb":
-                        hint = "组合块"
+                        hint = "组合块（整块翻译，禁止只翻其中一个词；не X 译为 不X）"
                     else:
                         hint = "零件：" + (r["role"] or "chunk")
                 elif r["kind"] == "full":
@@ -5216,6 +5216,8 @@ class Handler(BaseHTTPRequestHandler):
                 ru = str(ai.get("ru") or "").strip()
             zh = str(ai.get("zh") or "").strip()
             tag = str(ai.get("tag") or "").strip() or r["role"] or ""
+            if r.get("comb"):
+                tag = "组合块"  # 组合块 tag 机器固定，AI 填的 tag 不稳定
             if r.get("kind") == "part":
                 self._slot_table_ctx_update(ctx, r.get("role"), ru, r.get("source"), r.get("poolKey"))
             elif r.get("kind") == "full":
