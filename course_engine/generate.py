@@ -203,7 +203,7 @@ def generate_chapter_course(sentences: list) -> dict:
 
 def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
     """
-    异步章节级课程生成入口：带进度回调
+    异步章节级课程生成入口：带进度回调，真实流水线
 
     输入:
         sentences: [{"ru": "...", "zh": "..."}, ...]
@@ -223,46 +223,78 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
     t0 = time.time()
 
     try:
-        # TODO: 接入真实流水线（classifier + planner + orchestrator）
-        # 现在先用预生成的假数据，保证接口跑通
+        # 导入真实流水线模块
+        from classifier import classify_sentences
+        from plan_chapter import plan_chapter
+        from plan_layer import plan_layer
+        from orchestrator import execute_layer_plan
 
-        # 模拟进度回调
         total = len(sentences)
+
+        # 步骤1：分类
+        print(f"[pipeline] 开始分类 {total} 句...", flush=True)
+        classified = classify_sentences(sentences)
         if on_progress:
-            for i in range(total):
-                on_progress(i + 1)
-                time.sleep(0.01)  # 模拟分类耗时
+            on_progress(total)
+        t1 = time.time()
+        print(f"[pipeline] 分类完成: {t1-t0:.1f}s", flush=True)
 
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        data_path = os.path.join(root_dir, "chapter_01_full_v3.json")
-
-        if not os.path.exists(data_path):
+        # 检查分类失败
+        failed = [c for c in classified if c.get("classification_failed")]
+        if failed:
             return {
                 "success": False,
                 "steps": [],
-                "error": f"预生成数据文件不存在: {data_path}",
+                "error": f"{len(failed)} 句无法分类",
                 "engine": "new"
             }
 
-        with open(data_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # 步骤2：分层
+        chapter_plan = plan_chapter(classified)
+        t2 = time.time()
+        print(f"[pipeline] 分层完成: {t2-t1:.1f}s, {len(chapter_plan['layers'])} 层", flush=True)
 
-        steps = data.get("steps", [])
-        steps.sort(key=lambda x: x.get("seq", 0))
+        # 步骤3：层内编排
+        for layer in chapter_plan["layers"]:
+            layer["plan"] = plan_layer(layer)
+        t3 = time.time()
+        print(f"[pipeline] 层内编排完成: {t3-t2:.1f}s", flush=True)
 
-        t1 = time.time()
-        print(f"[timing] async generate total: {t1-t0:.2f}s")
+        # 步骤4：执行所有层
+        all_steps = []
+        gid = 1
+        for layer in chapter_plan["layers"]:
+            layer_steps = execute_layer_plan(layer["plan"])
+            for step in layer_steps:
+                step["gid"] = f"G_{gid:03d}"
+                step["layer_id"] = layer.get("layer_id", 0)
+                all_steps.append(step)
+                if step.get("type") == "完整句":
+                    gid += 1
+        t4 = time.time()
+        print(f"[pipeline] 执行完成: {t4-t3:.1f}s, {len(all_steps)} 步", flush=True)
+
+        # 重新编号 seq
+        for i, step in enumerate(all_steps):
+            step["seq"] = i + 1
+
+        total_groups = len(set(s["gid"] for s in all_steps))
+
+        t5 = time.time()
+        print(f"[pipeline] 总耗时: {t5-t0:.1f}s", flush=True)
 
         return {
             "success": True,
-            "steps": steps,
-            "total_layers": data.get("total_layers", 7),
-            "total_groups": data.get("total_groups", 0),
-            "total_steps": len(steps),
+            "steps": all_steps,
+            "total_layers": len(chapter_plan["layers"]),
+            "total_groups": total_groups,
+            "total_steps": len(all_steps),
             "engine": "new"
         }
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             "success": False,
             "steps": [],
