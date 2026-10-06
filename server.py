@@ -87,6 +87,9 @@ PLAN_PROMPT_V = "v3.2"
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
 SLOT_TABLE_PROMPT_V = "v13"  # v13: prefill 保留 hidden 字段（难度裁剪真正生效）——旧 v12 缓存失效强制重新生成
 
+# ---- 新课程引擎开关：True=走新引擎（GLM-4-plan + pymorphy3），False=全部走旧引擎 ----
+USE_NEW_ENGINE = True
+
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
@@ -5287,6 +5290,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "缺少 sentence_hash / russian_text / tokens"})
         if not isinstance(intents, list) or not intents:
             return self._json(400, {"ok": False, "error": "缺少 intents（模板引擎意图序列）"})
+
+        # ===== 新课程引擎：先试新引擎，失败就 fallback 到旧引擎 =====
+        if USE_NEW_ENGINE and difficulty == "easy":
+            try:
+                from course_engine.generate import generate_course_steps
+                result = generate_course_steps(russian_text, "")
+                if result["success"]:
+                    # 转换格式：新引擎输出 → 旧引擎 rows 格式
+                    rows = []
+                    for s in result["steps"]:
+                        rows.append({
+                            "seq": s["seq"],
+                            "cardType": s["type"],
+                            "ru": s["ru"],
+                            "zh": s["zh"],
+                            "tag": s["tag"],
+                            "groupId": s["gid"],
+                        })
+                    print(f"[course_gen] engine=new, ru={russian_text[:30]}, success=True, rows={len(rows)}")
+                    return self._json(200, {"ok": True, "engine": "new", "rows": rows})
+                else:
+                    print(f"[course_gen] engine=new, ru={russian_text[:30]}, success=False, error={result['error'][:80]}")
+                    # 失败了，继续走旧引擎
+            except Exception as e:
+                print(f"[course_gen] engine=new_exception, ru={russian_text[:30]}, error={str(e)[:80]}")
+                # 异常了，继续走旧引擎
+
         intents_fp = self._slot_table_intents_fp(intents, pool)
         # 1) 骨架分组：intents 骨架段缺 tokensRef → 后端 AI 分组 + 机器生成骨架（前端已给分组则跳过）
         need_group = True
