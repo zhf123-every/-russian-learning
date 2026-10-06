@@ -128,3 +128,144 @@ def generate_course_steps(ru_sentence: str, zh_translation: str) -> dict:
             "error": f"新引擎异常: {str(e)}",
             "engine": "new"
         }
+
+
+def generate_chapter_course(sentences: list) -> dict:
+    """
+    章节级课程生成入口：输入一课的所有句子，输出完整课程数据
+
+    输入:
+        [
+            {"ru": "Я знаю Ивана.", "zh": "我认识伊万。"},
+            {"ru": "Это студент.", "zh": "这是大学生。"},
+            ...
+        ]
+
+    返回:
+        {
+            "success": True,
+            "steps": [
+                {"seq": 1, "type": "积木", "ru": "Я", "zh": "我", "tag": "主语", "gid": "G_001"},
+                ...
+            ],
+            "total_groups": 69,
+            "total_steps": 293,
+            "engine": "new"
+        }
+    """
+    import time
+    t0 = time.time()
+
+    try:
+        # 暂时用预先生成的测试数据（后面替换成自动流水线）
+        # TODO: 接入 classifier + planner + orchestrator 自动生成
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_path = os.path.join(root_dir, "chapter_01_full_v3.json")
+        t1 = time.time()
+
+        if not os.path.exists(data_path):
+            return {
+                "success": False,
+                "steps": [],
+                "error": f"预生成数据文件不存在: {data_path}",
+                "engine": "new"
+            }
+        t2 = time.time()
+
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        t3 = time.time()
+
+        steps = data.get("steps", [])
+
+        # 按 seq 排序
+        steps.sort(key=lambda x: x.get("seq", 0))
+        t4 = time.time()
+
+        print(f"[timing] read_file: {t1-t0:.2f}s, check_exists: {t2-t1:.2f}s, load_json: {t3-t2:.2f}s, sort: {t4-t3:.2f}s, total: {t4-t0:.2f}s")
+
+        return {
+            "success": True,
+            "steps": steps,
+            "total_groups": data.get("total_groups", 0),
+            "total_steps": len(steps),
+            "engine": "new"
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "steps": [],
+            "error": f"章节生成异常: {str(e)}",
+            "engine": "new"
+        }
+
+
+def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
+    """
+    异步章节级课程生成入口：带进度回调
+
+    输入:
+        sentences: [{"ru": "...", "zh": "..."}, ...]
+        on_progress: 回调函数，参数是 classified_count（已分类句数）
+
+    返回:
+        {
+            "success": True,
+            "steps": [...],
+            "total_layers": 7,
+            "total_groups": 48,
+            "total_steps": 302,
+            "engine": "new"
+        }
+    """
+    import time
+    t0 = time.time()
+
+    try:
+        # TODO: 接入真实流水线（classifier + planner + orchestrator）
+        # 现在先用预生成的假数据，保证接口跑通
+
+        # 模拟进度回调
+        total = len(sentences)
+        if on_progress:
+            for i in range(total):
+                on_progress(i + 1)
+                time.sleep(0.01)  # 模拟分类耗时
+
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_path = os.path.join(root_dir, "chapter_01_full_v3.json")
+
+        if not os.path.exists(data_path):
+            return {
+                "success": False,
+                "steps": [],
+                "error": f"预生成数据文件不存在: {data_path}",
+                "engine": "new"
+            }
+
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        steps = data.get("steps", [])
+        steps.sort(key=lambda x: x.get("seq", 0))
+
+        t1 = time.time()
+        print(f"[timing] async generate total: {t1-t0:.2f}s")
+
+        return {
+            "success": True,
+            "steps": steps,
+            "total_layers": data.get("total_layers", 7),
+            "total_groups": data.get("total_groups", 0),
+            "total_steps": len(steps),
+            "engine": "new"
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "steps": [],
+            "error": f"异步章节生成异常: {str(e)}",
+            "engine": "new"
+        }

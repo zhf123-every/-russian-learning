@@ -88,7 +88,7 @@ PLAN_PROMPT_V = "v3.2"
 SLOT_TABLE_PROMPT_V = "v13"  # v13: prefill 保留 hidden 字段（难度裁剪真正生效）——旧 v12 缓存失效强制重新生成
 
 # ---- 新课程引擎开关：True=走新引擎（GLM-4-plan + pymorphy3），False=全部走旧引擎 ----
-USE_NEW_ENGINE = True
+USE_NEW_ENGINE = False  # 阶段B任务1验证完成后再切 True
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -1531,6 +1531,12 @@ def _quest_init():
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_tables (id VARCHAR(64) PRIMARY KEY, sentence_hash VARCHAR(64) NOT NULL, difficulty VARCHAR(16) NOT NULL, sentence TEXT NOT NULL, intents_fp VARCHAR(16) NOT NULL, `rows` JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v1', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_table (sentence_hash, difficulty, intents_fp))")
                 # P2：课时维度持久化 6 列表格（学生端数据源；缓存表是全局幂等，这里是课时落地副本）
                 cur.execute("CREATE TABLE IF NOT EXISTS sentence_slot_unit_tables (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, sentence_hash VARCHAR(64) NOT NULL, sentence TEXT NOT NULL, difficulty VARCHAR(16) NOT NULL, intents_fp VARCHAR(16) NOT NULL, `rows` JSON NOT NULL, review_status VARCHAR(16) NOT NULL DEFAULT 'ok', prompt_v VARCHAR(8) DEFAULT 'v6', created_at BIGINT DEFAULT 0, UNIQUE KEY uk_slot_unit (course_id, unit_id, sentence_hash, difficulty, intents_fp), KEY idx_slot_unit (course_id, unit_id))")
+                # 阶段A：整课steps表（新引擎分层编排输出）
+                cur.execute("CREATE TABLE IF NOT EXISTS course_steps (id INTEGER PRIMARY KEY AUTO_INCREMENT, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, seq INTEGER NOT NULL, gid VARCHAR(16) NOT NULL, step_type VARCHAR(16) NOT NULL, ru TEXT NOT NULL, zh TEXT NOT NULL, tag VARCHAR(64), created_at BIGINT DEFAULT 0, KEY idx_course_steps_course_id (course_id, unit_id))")
+                # 阶段B：异步生成任务表
+                cur.execute("CREATE TABLE IF NOT EXISTS generation_tasks (task_id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'pending', progress JSON, result JSON, error TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, KEY idx_gen_tasks_status (status), KEY idx_gen_tasks_created (created_at))")
+                # 阶段B：分类缓存表
+                cur.execute("CREATE TABLE IF NOT EXISTS sentence_classification_cache (ru_hash VARCHAR(64) PRIMARY KEY, ru TEXT NOT NULL, classification JSON NOT NULL, created_at BIGINT DEFAULT 0)")
                 # P4 幂等迁移：plan 缓存加词池指纹列（变体组依赖词池；换词池后缓存失效重建）
                 cur.execute("SHOW COLUMNS FROM sentence_slot_plans LIKE 'pool_fp'")
                 if not cur.fetchone():
@@ -5669,6 +5675,237 @@ class Handler(BaseHTTPRequestHandler):
         self._log_op(data, "slot_tables_save", "unit", unit_id, {"course_id": course_id, "saved": len(cleaned)})
         return self._json(200, {"ok": True, "saved": len(cleaned)})
 
+    # ========== 阶段A：整课生成接口 ==========
+    def _handle_admin_course_generate(self, data):
+        """POST /api/admin/course/generate —— 整课生成（新引擎分层编排）。
+        入参：{course_id, sentences: [{ru, zh}]}
+        出参：{ok, success, total_groups, total_steps, engine}"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        sentences = data.get("sentences") or []
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id"})
+        if not isinstance(sentences, list) or not sentences:
+            return self._json(400, {"ok": False, "error": "sentences 为空"})
+
+        # 调用新引擎
+        try:
+            from course_engine.generate import generate_chapter_course
+            result = generate_chapter_course(sentences)
+        except Exception as e:
+            print(f"[course_gen] new engine exception: {e}")
+            return self._json(500, {"ok": False, "success": False, "error": f"新引擎异常: {str(e)}"})
+
+        if not result["success"]:
+            print(f"[course_gen] engine=new, course={course_id}, success=False, error={result['error']}")
+            return self._json(200, {"ok": True, "success": False, "error": result["error"], "engine": "new"})
+
+        steps = result["steps"]
+        total_groups = result.get("total_groups", 0)
+        total_steps = len(steps)
+
+        # 写入数据库：先删旧数据，再插新数据
+        def _w():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM course_steps WHERE course_id=%s", (course_id,))
+                    for s in steps:
+                        cur.execute(
+                            "INSERT INTO course_steps (course_id, seq, gid, step_type, ru, zh, tag, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (course_id, s["seq"], s["gid"], s["type"], s["ru"], s["zh"], s.get("tag", ""), int(time.time() * 1000))
+                        )
+                    conn.commit()
+            finally:
+                conn.close()
+
+        try:
+            _seg_execute(_w)
+        except Exception as e:
+            print(f"[course_gen] 写数据库失败: {e}")
+            return self._json(500, {"ok": False, "success": False, "error": f"写数据库失败: {str(e)}"})
+
+        print(f"[course_gen] engine=new, course={course_id}, sentences={len(sentences)}, groups={total_groups}, steps={total_steps}")
+        self._log_op(data, "course_generate", "course", course_id, {"sentences": len(sentences), "steps": total_steps})
+
+        return self._json(200, {
+            "ok": True,
+            "success": True,
+            "course_id": course_id,
+            "total_groups": total_groups,
+            "total_steps": total_steps,
+            "engine": "new"
+        })
+
+    def _handle_admin_course_steps(self, data):
+        """GET /api/admin/course/steps?course_id=xxx —— 查询已生成的课程步骤"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id"})
+
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT seq, gid, step_type, ru, zh, tag FROM course_steps WHERE course_id=%s ORDER BY seq ASC", (course_id,))
+                    rows = cur.fetchall()
+                    return [{"seq": r[0], "gid": r[1], "type": r[2], "ru": r[3], "zh": r[4], "tag": r[5]} for r in rows]
+            finally:
+                conn.close()
+
+        try:
+            steps = _seg_execute(_q)
+        except Exception as e:
+            print(f"[course_steps] 查询失败: {e}")
+            return self._json(500, {"ok": False, "error": "查询失败"})
+
+        return self._json(200, {"ok": True, "course_id": course_id, "total_steps": len(steps), "steps": steps})
+
+    def _handle_admin_course_generate_async(self, data):
+        """POST /api/admin/course/generate-async —— 异步整课生成。
+        立刻返回 task_id，后台线程跑生成任务。
+        入参：{course_id, unit_id, sentences: [{ru, zh}]}
+        出参：{ok, task_id, status}"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        sentences = data.get("sentences") or []
+        if not course_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id"})
+        if not isinstance(sentences, list) or not sentences:
+            return self._json(400, {"ok": False, "error": "sentences 为空"})
+
+        # 生成 task_id
+        task_id = "task_" + uuid.uuid4().hex[:16]
+        now_ms = int(time.time() * 1000)
+
+        # 写入任务记录
+        def _create_task():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO generation_tasks (task_id, course_id, unit_id, status, progress, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (task_id, course_id, unit_id, "pending", json.dumps({"classified_count": 0, "total": len(sentences)}), now_ms, now_ms)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+        try:
+            _seg_execute(_create_task)
+        except Exception as e:
+            print(f"[gen_task] 创建任务失败: {e}")
+            return self._json(500, {"ok": False, "error": "创建任务失败"})
+
+        # 后台线程跑生成任务
+        def _run_task():
+            try:
+                # 更新状态：classifying
+                self._update_task_status(task_id, "classifying", {"classified_count": 0, "total": len(sentences)})
+
+                # 调用新引擎生成
+                from course_engine.generate import generate_chapter_course_async
+                result = generate_chapter_course_async(
+                    sentences,
+                    on_progress=lambda classified_count: self._update_task_status(
+                        task_id, "classifying", {"classified_count": classified_count, "total": len(sentences)}
+                    )
+                )
+
+                if not result["success"]:
+                    self._update_task_status(task_id, "failed", error=result.get("error", "未知错误"))
+                    return
+
+                # 更新状态：done，存结果
+                self._update_task_status(task_id, "done", result=result)
+
+            except Exception as e:
+                print(f"[gen_task] 任务异常: {task_id}, {e}")
+                self._update_task_status(task_id, "failed", error=str(e))
+
+        threading.Thread(target=_run_task, daemon=True).start()
+
+        return self._json(200, {
+            "ok": True,
+            "task_id": task_id,
+            "status": "pending"
+        })
+
+    def _handle_admin_course_task_status(self, data):
+        """GET /api/admin/course/task-status?task_id=xxx —— 查询任务状态"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        task_id = str(data.get("task_id") or "").strip()
+        if not task_id:
+            return self._json(400, {"ok": False, "error": "缺少 task_id"})
+
+        def _q():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT task_id, status, progress, result, error FROM generation_tasks WHERE task_id=%s", (task_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    return {
+                        "task_id": row[0],
+                        "status": row[1],
+                        "progress": json.loads(row[2]) if row[2] else None,
+                        "result": json.loads(row[3]) if row[3] else None,
+                        "error": row[4],
+                    }
+            finally:
+                conn.close()
+
+        try:
+            task = _seg_execute(_q)
+        except Exception as e:
+            print(f"[gen_task] 查询失败: {e}")
+            return self._json(500, {"ok": False, "error": "查询失败"})
+
+        if not task:
+            return self._json(404, {"ok": False, "error": "任务不存在"})
+
+        return self._json(200, {"ok": True, **task})
+
+    def _update_task_status(self, task_id, status, progress=None, result=None, error=None):
+        """更新任务状态（内部用）"""
+        now_ms = int(time.time() * 1000)
+        def _u():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    sql = "UPDATE generation_tasks SET status=%s, updated_at=%s"
+                    params = [status, now_ms]
+                    if progress is not None:
+                        sql += ", progress=%s"
+                        params.append(json.dumps(progress))
+                    if result is not None:
+                        sql += ", result=%s"
+                        params.append(json.dumps(result, ensure_ascii=False))
+                    if error is not None:
+                        sql += ", error=%s"
+                        params.append(error)
+                    sql += " WHERE task_id=%s"
+                    params.append(task_id)
+                    cur.execute(sql, params)
+                conn.commit()
+            finally:
+                conn.close()
+        try:
+            _seg_execute(_u)
+        except Exception as e:
+            print(f"[gen_task] 更新状态失败: {task_id}, {e}")
+
     def _handle_slot_tables_read(self, params):
         """GET /api/slot-tables?course_id=&unit_id=&difficulty=&include_pending=1 —— 公开读课时 6 列表格（学生端数据源）。
         默认只回 review_status='ok' 且 rows 非空的行；无 → items=[]（前端自动降级现有链路）。
@@ -6079,6 +6316,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/slot-tables":
             query = urllib.parse.urlparse(self.path).query
             return self._handle_slot_tables_read(urllib.parse.parse_qs(query))
+        if path == "/api/admin/course/steps":
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            data = {"course_id": params.get("course_id", [""])[0], "adminKey": params.get("adminKey", [""])[0]}
+            return self._handle_admin_course_steps(data)
         if path == "/api/reviews/list":
             return self._handle_reviews_list()
         if path == "/api/videos/resolve":
@@ -7185,6 +7427,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+        print(f"[DEBUG] POST path: {path}")  # 调试打印
         data = self._read_json()
         try:
             if path == "/api/transcribe":
@@ -7253,6 +7496,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_table_fill(data)
             if path == "/api/admin/slot-tables/save":
                 return self._handle_admin_slot_tables_save(data)
+            if path == "/api/admin/course/generate":
+                return self._handle_admin_course_generate(data)
+            if path == "/api/admin/course/generate-async":
+                return self._handle_admin_course_generate_async(data)
+            if path == "/api/admin/course/task-status":
+                return self._handle_admin_course_task_status(data)
+            if path == "/api/admin/course/steps":
+                return self._handle_admin_course_steps(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
             if path == "/api/learning/progress/save":

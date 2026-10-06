@@ -19,8 +19,24 @@ _CASE_MAP = {
 
 _GENDER_MAP = {
     "masc": "masc",
+    "m": "masc",
     "fem": "femn",
+    "f": "femn",
     "neut": "neut",
+    "n": "neut",
+}
+
+_NUMBER_MAP = {
+    "sing": "sing",
+    "sg": "sing",
+    "plur": "plur",
+    "pl": "plur",
+}
+
+_ANIMACY_MAP = {
+    "anim": "anim",
+    "inan": "inan",
+    "inanim": "inan",
 }
 
 _PERSON_MAP = {
@@ -87,16 +103,16 @@ def generate_form(lemma, grammar):
     if grammar:
         if "case" in grammar and grammar["case"] in _CASE_MAP:
             tags.add(_CASE_MAP[grammar["case"]])
-        if "number" in grammar:
-            tags.add(grammar["number"])
+        if "number" in grammar and grammar["number"] in _NUMBER_MAP:
+            tags.add(_NUMBER_MAP[grammar["number"]])
         if "gender" in grammar and grammar["gender"] in _GENDER_MAP:
             tags.add(_GENDER_MAP[grammar["gender"]])
         if "person" in grammar and grammar["person"] in _PERSON_MAP:
             tags.add(_PERSON_MAP[grammar["person"]])
         if "tense" in grammar and grammar["tense"] in _TENSE_MAP:
             tags.add(_TENSE_MAP[grammar["tense"]])
-        if "animacy" in grammar:
-            tags.add(grammar["animacy"])
+        if "animacy" in grammar and grammar["animacy"] in _ANIMACY_MAP:
+            tags.add(_ANIMACY_MAP[grammar["animacy"]])
 
     if tags:
         result = word.inflect(tags)
