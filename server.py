@@ -5014,12 +5014,18 @@ class Handler(BaseHTTPRequestHandler):
             if inf:
                 return (" ".join(x for x in (sub, neg, pred, inf, obj) if x)).strip()
             return (" ".join(x for x in (sub, neg, pred, obj) if x)).strip()
+        # 判断句（Это + 名词）：状语放句首更自然（Сегодня это мама），而非句尾（Это мама сегодня）
+        is_copula = sub.lower() == "это"
         if template == "time_pos":
             # 基于基础肯定句 + 时间（避免 "сегодня каждый день" 等状语残留叠加）
             base = last_base or last_full
+            if is_copula:
+                return (" ".join(x for x in (time_adv, base) if x)).strip()
             return (" ".join(x for x in (base, time_adv) if x)).strip()
         if template == "time_neg":
             # 基于最近否定句 + 时间（G_04 基础否定；G_05 带地点否定 → 天然叠加，句乐部节奏）
+            if is_copula:
+                return (" ".join(x for x in (time_adv, last_neg) if x)).strip()
             return (" ".join(x for x in (last_neg, time_adv) if x)).strip()
         if template == "swap_neg":
             # 换宾语段否定句（句乐部 46 结构）：主语 + 否定组合 + 不定式 + 宾语 + 时间，不依赖 last_neg
@@ -5072,9 +5078,13 @@ class Handler(BaseHTTPRequestHandler):
             return (" ".join(x for x in (last_neg_base, time_adv) if x)).strip()
         if template == "place_pos":
             base = last_base or last_full
+            if is_copula:
+                return (" ".join(x for x in (place, base) if x)).strip()
             return (" ".join(x for x in (base, place) if x)).strip()
         if template == "place_neg":
             # 基于基础否定句 + 地点（避免把前面时间词带进来 → "сегодня здесь"）
+            if is_copula:
+                return (" ".join(x for x in (place, last_neg_base) if x)).strip()
             return (" ".join(x for x in (last_neg_base, place) if x)).strip()
         if template == "evaluation":
             return ("Это " + evalw).strip() if evalw else ""
