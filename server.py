@@ -4845,7 +4845,7 @@ class Handler(BaseHTTPRequestHandler):
             "- 固定搭配/介词短语/不可拆短语整体一组（如 в парке、мой друг 各一组）",
             "- 宾语/补语/时间/地点可单独或合并成意群",
             "- 所有编号必须用且只用一次；每组编号必须连续",
-            "【难度粒度】easy=尽量拆细（词级）；medium=短语级（至少 2 词一组）；hard=整句一组",
+            "【分组粒度】一律词级拆分（难度差异由后续骨架裁剪控制，分组只负责喂词准确）",
             "【每组角色 role】只能取：主语 / 谓语 / 补语 / 介词短语 / 副词 / 其他",
             '【输出】{"groups":[{"indexes":[0],"role":"主语"},{"indexes":[1],"role":"谓语"},{"indexes":[2,3],"role":"补语"}]}',
         ]
@@ -4873,9 +4873,12 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return sorted(out, key=lambda x: x["indexes"][0])
 
-    def _slot_table_skeleton_steps(self, tokens, groups):
+    def _slot_table_skeleton_steps(self, tokens, groups, difficulty="easy"):
         """由分组决策机器生成骨架意图（与前端 buildSkeletonIntent 逐字节一致）：
-        意群1 单出 → 每新意群单出 + 累积组合 → 最后完整句；单意群补完整句行。"""
+        意群1 单出 → 每新意群单出 + 累积组合 → 最后完整句；单意群补完整句行。
+        分组一律词级（喂词完整：sub/pred/obj 都进 ctx）；表格显示粒度按难度裁剪：
+        - medium：主语/谓语单个词积木隐藏（只显示 ≥2 词组合块 + 完整句）
+        - hard：全部骨架积木隐藏（只显示完整句）——隐藏行照常喂 ctx，组合块拼装不受影响"""
         n = len(tokens)
         steps = []
         g0 = groups[0]
@@ -4895,6 +4898,15 @@ class Handler(BaseHTTPRequestHandler):
         if steps[-1]["kind"] != "full":
             steps.append({"kind": "full", "cardType": "完整句", "template": "skeleton",
                           "compose": [{"source": "core", "tokensRef": [0, n - 1]}], "groupId": "G_01"})
+        # 难度裁剪（2026-10-06 用户定稿：medium 只显 ≥2 词积木 / hard 纯完整句）
+        if difficulty == "hard":
+            for s in steps:
+                if s.get("kind") == "part":
+                    s["hidden"] = True
+        elif difficulty == "medium":
+            for s in steps:
+                if s.get("kind") == "part" and s.get("role") in ("主语", "谓语") and s.get("tokensRef") and s["tokensRef"][0] == s["tokensRef"][-1]:
+                    s["hidden"] = True
         return steps
 
     def _slot_table_prefill(self, intents, tokens, pool):
@@ -5242,7 +5254,7 @@ class Handler(BaseHTTPRequestHandler):
             groups = self._slot_table_group_verify(obj.get("groups"), len(tokens))
             if groups is None:
                 return self._json(200, {"ok": False, "fallback": True, "reason": "group_invalid", "raw": json.dumps(obj, ensure_ascii=False)[:400]})
-            skeleton = self._slot_table_skeleton_steps(tokens, groups)
+            skeleton = self._slot_table_skeleton_steps(tokens, groups, difficulty)
             # 骨架段边界：从首个 template='skeleton' 的 full 行往回都是 G_01 骨架行 → 整段替换
             sk_end = -1
             for i, st in enumerate(intents):
