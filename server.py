@@ -5767,7 +5767,19 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._json(200, {"ok": True, "course_id": course_id, "total_steps": len(steps), "steps": steps})
 
-    def _handle_admin_course_generate_async(self, data):
+    def _handle_admin_debug_import(self, data):
+        """调试接口：返回 sys.path、工作目录、course_engine 是否存在"""
+        import sys, os
+        result = {
+            "cwd": os.getcwd(),
+            "__file__": __file__,
+            "sys.path": sys.path[:5],
+            "course_engine_exists": os.path.exists("course_engine"),
+            "course_engine_init_exists": os.path.exists("course_engine/__init__.py"),
+            "course_engine_generate_exists": os.path.exists("course_engine/generate.py"),
+            "files_in_root": [f for f in os.listdir(".") if not f.startswith(".")][:20],
+        }
+        return self._json(200, {"ok": True, "debug": result})
         """POST /api/admin/course/generate-async —— 异步整课生成。
         立刻返回 task_id，后台线程跑生成任务。
         入参：{course_id, unit_id, sentences: [{ru, zh}]}
@@ -7506,6 +7518,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_segments_table_fill(data)
             if path == "/api/admin/slot-tables/save":
                 return self._handle_admin_slot_tables_save(data)
+            if path == "/api/admin/debug/import":
+                return self._handle_admin_debug_import(data)
             if path == "/api/admin/course/generate":
                 return self._handle_admin_course_generate(data)
             if path == "/api/admin/course/generate-async":
