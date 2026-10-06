@@ -4981,6 +4981,61 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     # ============ 机器拼装：完整句（full 行；除 if/so/review/skeleton 全由机器拼） ============
+    # 后端兜底句型检测：非动词句自动过滤掉换谓语/换宾语 intents
+    def _slot_table_filter_by_sentence_type(self, intents, russian_text, tokens):
+        """检测句子类型，非动词句自动去掉高风险 intents（换谓语/换宾语/不定式扩展）。
+        动词句保留完整长链；判断句/疑问句/无人称句走短链。"""
+        text = (russian_text or "").strip().lower().rstrip(".!?,;:")
+        tokens_lower = [t.lower().strip(".,!?") for t in tokens if t]
+
+        # —— 规则：判断是否为非动词句 ——
+        is_non_verbal = False
+
+        # 规则1：Это/это 开头 → 判断句
+        if tokens_lower and tokens_lower[0] in ("это",):
+            is_non_verbal = True
+
+        # 规则2：结尾是 дома/здесь/тут/там → 存在句（Анна дома. / Книга здесь.）
+        if tokens_lower and tokens_lower[-1] in ("дома", "здесь", "тут", "там"):
+            is_non_verbal = True
+
+        # 规则3：疑问词开头 → 疑问句
+        if tokens_lower and tokens_lower[0] in ("кто", "что", "где", "когда", "почему", "как", "сколько", "чей"):
+            is_non_verbal = True
+
+        # 规则4：无人称句开头词
+        if tokens_lower and tokens_lower[0] in ("мне", "тебе", "нам", "вам", "надо", "нужно", "можно", "холодно", "тепло", "весело", "грустно"):
+            is_non_verbal = True
+
+        if not is_non_verbal:
+            return intents  # 动词句，保留完整长链
+
+        # —— 非动词句：过滤掉高风险 intents ——
+        # 要过滤的模板：换谓语/换宾语/不定式扩展相关
+        SKIP_TEMPLATES = {"infinitive", "predicate_pos", "predicate_neg",
+                          "object_pos", "object_neg", "swap_neg", "freq_neg"}
+        # 要过滤的角色：词池来的新谓语/新宾语积木
+        SKIP_ROLES = {"谓语", "补语"}
+
+        filtered = []
+        for st in intents:
+            tmpl = st.get("template") or ""
+            role = st.get("role") or ""
+            src = st.get("source") or ""
+
+            # 跳过换谓语/换宾语模板
+            if tmpl in SKIP_TEMPLATES:
+                continue
+
+            # 跳过词池来的谓语/补语积木（换谓语/换宾语段的积木行）
+            if src == "pool" and role in SKIP_ROLES and st.get("poolKey") in ("predicates", "objects"):
+                continue
+
+            filtered.append(st)
+
+        print(f"[slot_table] 非动词句检测: '{russian_text[:30]}' → 过滤前 {len(intents)} 行 → 过滤后 {len(filtered)} 行")
+        return filtered
+
     # 模板结构由模板定死，槽位词来自 ctx（前序词池/模板词/上一完整句）→ 结构错误率趋近 0
     def _slot_table_build_full(self, template, ctx):
         if not template:
@@ -5136,6 +5191,11 @@ class Handler(BaseHTTPRequestHandler):
         elif role == "否定组合":
             ctx["neg_comb"] = ru
         elif role == "时间":
+            # 硬过滤：方式副词不能当时间词（поздно/быстро 等），自动替换成 сегодня
+            TIME_BLACKLIST = {"поздно", "рано", "быстро", "медленно", "хорошо", "плохо",
+                              "тихо", "громко", "весело", "грустно", "трудно", "легко"}
+            if ru.lower().strip() in TIME_BLACKLIST:
+                ru = "сегодня"
             ctx["time_adv"] = ru
         elif role == "频率":
             ctx["time_adv"] = ru
@@ -5260,7 +5320,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         # 3) 生成（含骨架分组）
-        built_intents = intents
+        # 3.0) 后端兜底：自动句型检测 — 非动词句自动过滤掉换谓语/换宾语 intents
+        built_intents = self._slot_table_filter_by_sentence_type(intents, russian_text, tokens)
         if need_group:
             obj = None
             for _g in range(2):  # 分组 LLM 偶发空响应，重试 1 次
