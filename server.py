@@ -6321,6 +6321,11 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(query)
             data = {"course_id": params.get("course_id", [""])[0], "adminKey": params.get("adminKey", [""])[0]}
             return self._handle_admin_course_steps(data)
+        if path == "/api/admin/course/task-status":
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            data = {"task_id": params.get("task_id", [""])[0], "adminKey": params.get("adminKey", [""])[0]}
+            return self._handle_admin_course_task_status(data)
         if path == "/api/reviews/list":
             return self._handle_reviews_list()
         if path == "/api/videos/resolve":
