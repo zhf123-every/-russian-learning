@@ -26,6 +26,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 确保项目根目录在 sys.path 里
 import tempfile
 import threading
 import time
