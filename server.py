@@ -5594,7 +5594,9 @@ class Handler(BaseHTTPRequestHandler):
                 continue  # 防御：SQL 已过滤，代码层再兜一道（pending/generating 不进学生端）
             if diff and r[2] != diff:
                 continue  # 防御：difficulty 过滤（假 DB/竞态下 SQL 未生效时兜底）
-            key = r[0]
+            # ⚠️ 2026-10-06 根因修复：key 必须含 difficulty —— 同一句子的初/中/高 3 条记录 sentence_hash 相同，
+            # 只用 hash 作 key 会互相覆盖，read 只剩 1 档（用户看到"只生成一个级"的真根因）
+            key = f"{r[0]}::{r[2]}"
             parsed = []
             try:
                 parsed = json.loads(r[4]) if isinstance(r[4], str) else (r[4] or [])
