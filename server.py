@@ -85,7 +85,7 @@ ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 PLAN_PROMPT_V = "v3.2"
 
 # ---- P5（路线B）：句乐部式 6 列表格 Prompt 版本（同 PLAN 机制：升级即失效重建） ----
-SLOT_TABLE_PROMPT_V = "v12"
+SLOT_TABLE_PROMPT_V = "v13"  # v13: prefill 保留 hidden 字段（难度裁剪真正生效）——旧 v12 缓存失效强制重新生成
 
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
@@ -4943,6 +4943,7 @@ class Handler(BaseHTTPRequestHandler):
             row["hint"] = st.get("hint")
             row["compose"] = st.get("compose")
             row["tokensRef"] = st.get("tokensRef")
+            row["hidden"] = st.get("hidden")  # 难度档裁剪标记（medium/hard 隐藏行照常喂 ctx、组装时跳过）
             # 组合类 part 行（не люблю / делать это / Я люблю）：组装阶段机器拼（neg+pred / inf+obj / sub+pred）
             if st.get("kind") == "part" and st.get("role") in ("组合", "否定组合"):
                 row["comb"] = True
