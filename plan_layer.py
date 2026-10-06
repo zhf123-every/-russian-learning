@@ -33,6 +33,7 @@ def build_plan_for_sentence(sentence):
         "object": structure.get("object") or structure.get("predicate"),  # 判断句用predicate
         "negation": structure.get("negation", False),
         "adverbial": structure.get("adverbial", []),
+        "is_question": structure.get("type") == "question",  # 疑问句标记
     }
 
     # 特殊模板：不衍生（如疑问句）
@@ -119,6 +120,7 @@ def build_reuse_plan_for_sentence(sentence, template):
         "base_structure": base_structure,
         "derivations": derivations,
         "zh": sentence["zh"],
+        "no_derivation": template.get("no_derivation", False),  # 传递 no_derivation 标记
     }
 
 

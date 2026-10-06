@@ -283,6 +283,7 @@ def execute_layer_plan(layer_plan):
     if seed1:
         base = seed1["base_structure"]
         zh = seed1.get("zh", "")
+        is_no_derivation = seed1.get("no_derivation", False)
 
         # G_01：原句
         steps = build_steps(base, f"G_{gid:02d}", zh)
@@ -290,9 +291,13 @@ def execute_layer_plan(layer_plan):
         all_steps.extend(steps)
         gid += 1
 
-        # 衍生
-        for deriv in seed1.get("derivations", []):
-            new_struct = apply_derivation(base, deriv)
+        # 如果是 no_derivation 类型，不执行衍生
+        if is_no_derivation:
+            pass  # 跳过衍生
+        else:
+            # 衍生
+            for deriv in seed1.get("derivations", []):
+                new_struct = apply_derivation(base, deriv)
             steps = build_steps(new_struct, f"G_{gid:02d}", zh)
             _add_steps(steps)
             all_steps.extend(steps)
@@ -320,18 +325,21 @@ def execute_layer_plan(layer_plan):
     for reuse in layer_plan.get("reuse", []):
         base = reuse["base_structure"]
         zh = reuse.get("zh", "")
+        is_no_derivation = reuse.get("no_derivation", False)
 
         steps = build_steps(base, f"G_{gid:02d}", zh)
         _add_steps(steps)
         all_steps.extend(steps)
         gid += 1
 
-        for deriv in reuse.get("derivations", []):
-            new_struct = apply_derivation(base, deriv)
-            steps = build_steps(new_struct, f"G_{gid:02d}", zh)
-            _add_steps(steps)
-            all_steps.extend(steps)
-            gid += 1
+        # 如果是 no_derivation 类型，不执行衍生
+        if not is_no_derivation:
+            for deriv in reuse.get("derivations", []):
+                new_struct = apply_derivation(base, deriv)
+                steps = build_steps(new_struct, f"G_{gid:02d}", zh)
+                _add_steps(steps)
+                all_steps.extend(steps)
+                gid += 1
 
     return all_steps, gid - 1, seq - 1
 
