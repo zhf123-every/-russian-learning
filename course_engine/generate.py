@@ -262,21 +262,28 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
 
         # 步骤4：执行所有层
         all_steps = []
-        gid = 1
+        global_gid = 1
         for layer in chapter_plan["layers"]:
-            layer_steps = execute_layer_plan(layer["plan"])
+            layer_steps, layer_groups, layer_step_count = execute_layer_plan(layer["plan"])
             for step in layer_steps:
-                step["gid"] = f"G_{gid:03d}"
                 step["layer_id"] = layer.get("layer_id", 0)
                 all_steps.append(step)
-                if step.get("type") == "完整句":
-                    gid += 1
         t4 = time.time()
         print(f"[pipeline] 执行完成: {t4-t3:.1f}s, {len(all_steps)} 步", flush=True)
 
-        # 重新编号 seq
-        for i, step in enumerate(all_steps):
-            step["seq"] = i + 1
+        # 重新编号 seq 和 gid
+        current_gid = 1
+        current_seq = 1
+        last_full_sentence = None
+        for step in all_steps:
+            step["seq"] = current_seq
+            current_seq += 1
+            if step.get("type") == "完整句":
+                step["gid"] = f"G_{current_gid:03d}"
+                current_gid += 1
+            else:
+                # 积木属于上一个完整句的 gid
+                step["gid"] = f"G_{current_gid:03d}"
 
         total_groups = len(set(s["gid"] for s in all_steps))
 
