@@ -5513,7 +5513,17 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("DELETE FROM sentence_slot_unit_tables WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                    # ⚠️ 2026-10-06 修复：不再整课时 DELETE —— 只覆盖本次 items 涉及的 (sentence_hash, difficulty)，
+                    # 保留本次未生成（网络/LLM 失败）的难度旧记录，避免「补跑只成功一个难度 → 其余被删成未生成」。
+                    seen = set()
+                    for it in cleaned:
+                        k = (it["sentence_hash"], it["difficulty"])
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        cur.execute(
+                            "DELETE FROM sentence_slot_unit_tables WHERE course_id=%s AND unit_id=%s AND sentence_hash=%s AND difficulty=%s",
+                            (course_id, unit_id, it["sentence_hash"], it["difficulty"]))
                     pid = str(uuid.uuid4())
                     for it in cleaned:
                         pid = str(uuid.uuid4())
