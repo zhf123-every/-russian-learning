@@ -5356,6 +5356,10 @@ class Handler(BaseHTTPRequestHandler):
                "tokens": tokens, "last_comb": "", "pred_zh": ""}
         out_rows = []
         for i, r in enumerate(prefilled):
+            if r.get("hidden"):
+                # hidden 行（前端难度档标记）：prefill/LLM 填词已处理并更新 ctx，但不出现在表格
+                # （2026-10-06 三档粒度：medium 隐藏单字积木、hard 隐藏全部积木——完整句仍靠其 ctx 机器拼装）
+                continue
             ai = ai_rows[i] if isinstance(ai_rows[i], dict) else {}
             ru = r["fixed"] or ""
             if not ru and r.get("comb"):
@@ -5418,7 +5422,7 @@ class Handler(BaseHTTPRequestHandler):
                                 ctx["last_base"] = ru
                         if tpl in ("evaluation", "degree", "evaluation_ext", "not"):
                             ctx["last_eval"] = ru
-            out_rows.append({"seq": i + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
+            out_rows.append({"seq": len(out_rows) + 1, "cardType": r["cardType"], "ru": ru, "zh": zh, "tag": tag, "groupId": r["groupId"]})
         # 6.5) 骨架完整句防御：第一完整句必须逐字符 == 原句（数字俄语化后比较），否则回写机器值
         sk_ru = ""
         for row in out_rows:
