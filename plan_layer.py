@@ -26,15 +26,6 @@ def build_plan_for_sentence(sentence):
     if not template:
         raise Exception(f"缺少 {primary_tag} 的模板（句子：{sentence['ru']}）")
 
-    # 特殊模板：不衍生（如疑问句）
-    if template.get("no_derivation"):
-        return {
-            "base_structure": base_structure,
-            "derivations": [],  # 没有衍生
-            "zh": sentence["zh"],
-            "no_derivation": True,  # 标记
-        }
-
     # 把大模型的 structure 转换成 orchestrator 需要的格式
     base_structure = {
         "subject": structure.get("subject"),
@@ -43,6 +34,15 @@ def build_plan_for_sentence(sentence):
         "negation": structure.get("negation", False),
         "adverbial": structure.get("adverbial", []),
     }
+
+    # 特殊模板：不衍生（如疑问句）
+    if template.get("no_derivation"):
+        return {
+            "base_structure": base_structure,
+            "derivations": [],  # 没有衍生
+            "zh": sentence["zh"],
+            "no_derivation": True,  # 标记
+        }
 
     # 生成衍生计划
     derivations = []
