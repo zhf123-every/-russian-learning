@@ -7,3 +7,5 @@ av
 boto3
 natasha
 PyJWT>=2.8
+pymorphy3
+openai
