@@ -5813,7 +5813,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._update_task_status(task_id, "classifying", {"classified_count": 0, "total": len(sentences)})
 
                 # 调用新引擎生成
-                from course_engine.generate import generate_chapter_course_async
+                import sys, os
+                _course_engine_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'course_engine')
+                if _course_engine_dir not in sys.path:
+                    sys.path.insert(0, _course_engine_dir)
+                from generate import generate_chapter_course_async
                 result = generate_chapter_course_async(
                     sentences,
                     on_progress=lambda classified_count: self._update_task_status(
