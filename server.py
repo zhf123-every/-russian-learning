@@ -5780,6 +5780,8 @@ class Handler(BaseHTTPRequestHandler):
             "files_in_root": [f for f in os.listdir(".") if not f.startswith(".")][:20],
         }
         return self._json(200, {"ok": True, "debug": result})
+
+    def _handle_admin_course_generate_async(self, data):
         """POST /api/admin/course/generate-async —— 异步整课生成。
         立刻返回 task_id，后台线程跑生成任务。
         入参：{course_id, unit_id, sentences: [{ru, zh}]}
