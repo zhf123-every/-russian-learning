@@ -43,6 +43,40 @@ _SUBJ_TO_PERSON = {
 }
 
 
+def validate_judgment_agreement(structure):
+    """
+    校验判断句的主语和表语的性别/数是否一致
+    返回 True 表示一致（可以生成），False 表示不一致（跳过）
+    """
+    # 只有判断句才校验（没有实义动词）
+    is_copula = (not structure.get("verb")) or (structure.get("verb", {}).get("lemma") == "быть")
+    if not is_copula:
+        return True  # 不是判断句，不校验
+    
+    subj = structure.get("subject", {})
+    obj = structure.get("object", {})
+    if not subj or not obj:
+        return True  # 缺成分，不校验
+    
+    subj_grammar = subj.get("grammar", {})
+    obj_grammar = obj.get("grammar", {})
+    
+    # 1. 数必须一致
+    subj_number = subj_grammar.get("number")
+    obj_number = obj_grammar.get("number")
+    if subj_number and obj_number and subj_number != obj_number:
+        return False
+    
+    # 2. 性别必须一致（都是单数的时候）
+    if subj_number == "sing" and obj_number == "sing":
+        subj_gender = subj_grammar.get("gender")
+        obj_gender = obj_grammar.get("gender")
+        if subj_gender and obj_gender and subj_gender != obj_gender:
+            return False
+    
+    return True
+
+
 def apply_derivation(structure, derivation):
     """
     应用一个衍生指令，返回新的句子结构
@@ -325,10 +359,13 @@ def execute_layer_plan(layer_plan, start_gid=1):
             # 衍生
             for deriv in seed1.get("derivations", []):
                 new_struct = apply_derivation(base, deriv)
-            steps = build_steps(new_struct, f"G_{gid:02d}", zh)
-            _add_steps(steps)
-            all_steps.extend(steps)
-            gid += 1
+                # 校验判断句的性别/数一致性，不一致就跳过这个衍生
+                if not validate_judgment_agreement(new_struct):
+                    continue
+                steps = build_steps(new_struct, f"G_{gid:02d}", zh)
+                _add_steps(steps)
+                all_steps.extend(steps)
+                gid += 1
 
     # 2. 种子句2（如果有）
     seed2 = layer_plan.get("seed2", {})

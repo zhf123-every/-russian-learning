@@ -77,6 +77,23 @@ def normalize_llm_structure(structure, primary_tag=None):
             structure["verb"]["lemma"] = parsed.normal_form
         except:
             pass  # 解析失败就保留原 lemma
+    
+    # 1.5 object lemma 规范化：变形后的形式 → 原形（друзья → друг）
+    if structure.get("object") and isinstance(structure["object"], dict):
+        obj = structure["object"]
+        if obj.get("lemma"):
+            try:
+                parsed = morph.parse(obj["lemma"])[0]
+                obj["lemma"] = parsed.normal_form
+            except:
+                pass
+        # 如果是带head的名词短语，也规范化head的lemma
+        if obj.get("head") and obj["head"].get("lemma"):
+            try:
+                parsed = morph.parse(obj["head"]["lemma"])[0]
+                obj["head"]["lemma"] = parsed.normal_form
+            except:
+                pass
 
     # 2. subject 的 person/number 强制修正（字典优先）
     if structure.get("subject") and structure["subject"].get("lemma"):
