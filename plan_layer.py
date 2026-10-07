@@ -32,22 +32,22 @@ def derive_subject_person_number(subject):
     """
     从主语结构里推导 person 和 number。
     优先级：
-    1. 如果主语 grammar 里有 person/number，直接用
-    2. 如果主语 lemma 在 SUBJ_PERSON_NUMBER 字典里，用字典
+    1. 如果主语 lemma 在 SUBJ_PERSON_NUMBER 字典里，用字典（字典是唯一事实来源）
+    2. 如果主语 grammar 里有 person/number，直接用
     3. 否则，用 pymorphy3 分析主语的数，推导为第三人称
     """
     if not subject:
         return {}
 
-    subj_grammar = subject.get("grammar") or {}
-    # 优先级1：grammar 里有就直接用
-    if subj_grammar.get("person") and subj_grammar.get("number"):
-        return {"person": subj_grammar["person"], "number": subj_grammar["number"]}
-
-    # 优先级2：lemma 在字典里
+    # 优先级1：字典优先
     lemma = (subject.get("lemma") or "").lower()
     if lemma in SUBJ_PERSON_NUMBER:
         return SUBJ_PERSON_NUMBER[lemma]
+
+    # 优先级2：grammar 里有就用
+    subj_grammar = subject.get("grammar") or {}
+    if subj_grammar.get("person") and subj_grammar.get("number"):
+        return {"person": subj_grammar["person"], "number": subj_grammar["number"]}
 
     # 优先级3：名词主语，用 pymorphy3 分析数，默认第三人称
     try:
@@ -56,6 +56,36 @@ def derive_subject_person_number(subject):
         return {"person": "3", "number": number}
     except:
         return {"person": "3", "number": "sing"}
+
+
+def normalize_llm_structure(structure):
+    """
+    把大模型输出的 structure 规范化（统一处理，不要在多处打补丁）
+    1. verb 的 lemma 用 pymorphy3 normal_form 还原为原形
+    2. subject 的 person/number 用 SUBJ_PERSON_NUMBER 字典强制修正
+    3. 其他字段的统一处理
+    """
+    if not structure:
+        return {}
+
+    # 1. verb lemma 规范化：变位形式 → 原形
+    if structure.get("verb") and structure["verb"].get("lemma"):
+        lemma = structure["verb"]["lemma"]
+        try:
+            parsed = morph.parse(lemma)[0]
+            structure["verb"]["lemma"] = parsed.normal_form
+        except:
+            pass  # 解析失败就保留原 lemma
+
+    # 2. subject 的 person/number 强制修正（字典优先）
+    if structure.get("subject") and structure["subject"].get("lemma"):
+        subj_lemma = structure["subject"]["lemma"].lower()
+        if subj_lemma in SUBJ_PERSON_NUMBER:
+            structure["subject"]["grammar"] = structure["subject"].get("grammar", {})
+            structure["subject"]["grammar"]["person"] = SUBJ_PERSON_NUMBER[subj_lemma]["person"]
+            structure["subject"]["grammar"]["number"] = SUBJ_PERSON_NUMBER[subj_lemma]["number"]
+
+    return structure
 
 
 # 动词-宾语匹配表：每个动词能接什么类型的宾语
@@ -113,6 +143,9 @@ def build_plan_for_sentence(sentence):
     """
     primary_tag = sentence["primary_tag"]
     structure = sentence.get("structure", {})
+
+    # 统一规范化大模型输出的 structure
+    structure = normalize_llm_structure(structure)
 
     # 匹配模板
     template_name, template = match_template(primary_tag)
@@ -176,6 +209,9 @@ def build_reuse_plan_for_sentence(sentence, template):
     """
     structure = sentence.get("structure") or {}
     primary_tag = sentence.get("primary_tag", "")
+
+    # 统一规范化大模型输出的 structure（和种子句用同一个函数）
+    structure = normalize_llm_structure(structure)
 
     # 标准化 base_structure（公共函数，和种子句用同一个）
     base_structure = normalize_base_structure(structure, primary_tag)
