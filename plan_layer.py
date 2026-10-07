@@ -58,12 +58,13 @@ def derive_subject_person_number(subject):
         return {"person": "3", "number": "sing"}
 
 
-def normalize_llm_structure(structure):
+def normalize_llm_structure(structure, primary_tag=None):
     """
     把大模型输出的 structure 规范化（统一处理，不要在多处打补丁）
     1. verb 的 lemma 用 pymorphy3 normal_form 还原为原形
     2. subject 的 person/number 用 SUBJ_PERSON_NUMBER 字典强制修正
-    3. 其他字段的统一处理
+    3. T23 疑问句清空 verb 字段（Кто это? 里根本没有动词）
+    4. 其他字段的统一处理
     """
     if not structure:
         return {}
@@ -84,6 +85,10 @@ def normalize_llm_structure(structure):
             structure["subject"]["grammar"] = structure["subject"].get("grammar", {})
             structure["subject"]["grammar"]["person"] = SUBJ_PERSON_NUMBER[subj_lemma]["person"]
             structure["subject"]["grammar"]["number"] = SUBJ_PERSON_NUMBER[subj_lemma]["number"]
+
+    # 3. T23 疑问句清空 verb 字段（Кто это? 里根本没有动词，это 是指示代词）
+    if primary_tag == "T23":
+        structure.pop("verb", None)
 
     return structure
 
@@ -145,7 +150,7 @@ def build_plan_for_sentence(sentence):
     structure = sentence.get("structure", {})
 
     # 统一规范化大模型输出的 structure
-    structure = normalize_llm_structure(structure)
+    structure = normalize_llm_structure(structure, primary_tag)
 
     # 匹配模板
     template_name, template = match_template(primary_tag)
@@ -211,7 +216,7 @@ def build_reuse_plan_for_sentence(sentence, template):
     primary_tag = sentence.get("primary_tag", "")
 
     # 统一规范化大模型输出的 structure（和种子句用同一个函数）
-    structure = normalize_llm_structure(structure)
+    structure = normalize_llm_structure(structure, primary_tag)
 
     # 标准化 base_structure（公共函数，和种子句用同一个）
     base_structure = normalize_base_structure(structure, primary_tag)
