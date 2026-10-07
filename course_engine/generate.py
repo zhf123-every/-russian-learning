@@ -231,13 +231,61 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
 
         total = len(sentences)
 
-        # 步骤1：分类
+        # 步骤1：分类（带缓存）
         print(f"[pipeline] 开始分类 {total} 句...", flush=True)
-        classified = classify_sentences(sentences)
-        if on_progress:
-            on_progress(total)
+
+        from .cache import get_cached_classification, save_classification_to_cache
+
+        classified = []
+        cache_hit = 0
+        cache_miss = 0
+
+        for i, s in enumerate(sentences):
+            ru = s["ru"]
+            zh = s["zh"]
+            print(f"分类中 {i+1}/{total}: {ru[:30]}...", flush=True)
+
+            # 先查缓存
+            cached = get_cached_classification(ru)
+            if cached:
+                classified.append(cached)
+                cache_hit += 1
+                print(f"  ✅ 缓存命中", flush=True)
+                continue
+
+            # 缓存未命中，调大模型
+            cache_miss += 1
+            try:
+                from classifier import classify_one
+                from teaching_points_loader import TEACHING_POINTS
+                points = TEACHING_POINTS["points"]
+
+                r = classify_one(ru, zh)
+                primary = r.get("primary_tag", "")
+                level = points.get(primary, {}).get("level", 1)
+                result = {
+                    "ru": ru,
+                    "zh": zh,
+                    "tags": r.get("tags", []),
+                    "primary_tag": primary,
+                    "level": level,
+                    "reason": r.get("reason", ""),
+                    "structure": r.get("structure", {}),
+                }
+                classified.append(result)
+                # 写入缓存
+                save_classification_to_cache(ru, result)
+            except Exception as e:
+                print(f"  ❌ 失败: {e}", flush=True)
+                classified.append({
+                    "ru": ru,
+                    "zh": zh,
+                    "classification_failed": True,
+                    "error": str(e),
+                })
+
         t1 = time.time()
-        print(f"[pipeline] 分类完成: {t1-t0:.1f}s", flush=True)
+        print(f"[pipeline] 分类完成: {t1-t0:.1f}s，命中缓存 {cache_hit} 句，调大模型 {cache_miss} 句", flush=True)
 
         # 检查分类失败
         failed = [c for c in classified if c.get("classification_failed")]
