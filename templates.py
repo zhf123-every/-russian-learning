@@ -13,9 +13,9 @@ TEMPLATES = {
         "seed_derivations": [
             {"type": "加否定"},
             {"type": "换名词", "candidates": [
-                {"lemma": "папа", "grammar": {"case": "nom", "number": "sing", "gender": "masc"}},
-                {"lemma": "книга", "grammar": {"case": "nom", "number": "sing", "gender": "fem"}},
-                {"lemma": "окно", "grammar": {"case": "nom", "number": "sing", "gender": "neut"}},
+                {"lemma": "папа", "grammar": {"case": "nom", "number": "sing", "gender": "masc", "animacy": "anim"}},
+                {"lemma": "книга", "grammar": {"case": "nom", "number": "sing", "gender": "fem", "animacy": "inan"}},
+                {"lemma": "окно", "grammar": {"case": "nom", "number": "sing", "gender": "neut", "animacy": "inan"}},
             ], "max": 3},
             {"type": "加时间", "candidates": ["сегодня"], "max": 1},
         ],
