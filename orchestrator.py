@@ -74,6 +74,16 @@ def validate_judgment_agreement(structure):
         if subj_gender and obj_gender and subj_gender != obj_gender:
             return False
     
+    # 3. 如果主语是人，表语必须也是人（语义一致）
+    subj_lemma = subj.get("lemma", "").lower()
+    # 人称代词都是人
+    PERSON_PRONOUNS = {"я", "ты", "он", "она", "оно", "мы", "вы", "они"}
+    if subj_lemma in PERSON_PRONOUNS:
+        # 表语必须是有生命的（anim）
+        obj_animacy = obj_grammar.get("animacy")
+        if obj_animacy == "inan":
+            return False  # 人不能是无生命的东西（比如"我是房子"）
+    
     return True
 
 
