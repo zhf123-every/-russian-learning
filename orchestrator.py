@@ -443,15 +443,28 @@ def execute_layer_plan(layer_plan, start_gid=1):
         is_no_derivation = reuse.get("no_derivation", False)
 
         steps = build_steps(base, f"G_{gid:02d}", zh)
-        _add_steps(steps)
-        all_steps.extend(steps)
+        # 完整性校验：不通过就跳过这个G
+        valid, reason = validate_g(steps, base)
+        if not valid:
+            print(f"[validate] G_{gid:02d} 被拦截: {reason}", flush=True)
+        else:
+            _add_steps(steps)
+            all_steps.extend(steps)
         gid += 1
 
         # 如果是 no_derivation 类型，不执行衍生
         if not is_no_derivation:
             for deriv in reuse.get("derivations", []):
                 new_struct = apply_derivation(base, deriv)
+                # 校验判断句的性别/数一致性，不一致就跳过这个衍生
+                if not validate_judgment_agreement(new_struct):
+                    continue
                 steps = build_steps(new_struct, f"G_{gid:02d}", zh)
+                # 完整性校验：不通过就跳过这个G
+                valid, reason = validate_g(steps, new_struct)
+                if not valid:
+                    print(f"[validate] G_{gid:02d} 被拦截: {reason}", flush=True)
+                    continue
                 _add_steps(steps)
                 all_steps.extend(steps)
                 gid += 1
