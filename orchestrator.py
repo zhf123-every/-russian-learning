@@ -179,6 +179,12 @@ def build_steps(structure, gid, zh_translation=""):
 
     has_neg = structure.get("negation", False)
 
+    # 判断句检测：没有实义动词，或动词是 быть
+    is_copula = (not structure.get("verb")) or (structure.get("verb", {}).get("lemma") == "быть")
+
+    # 疑问句检测：如果原句以 ? 结尾，完整句也用 ?
+    is_question = structure.get("is_question", False)
+
     # 2. 拆积木
     if subject_form:
         steps.append({"type": "积木", "ru": subject_form, "zh": subject_zh, "tag": "主语", "gid": gid})
@@ -201,12 +207,6 @@ def build_steps(structure, gid, zh_translation=""):
     # 3. 组装完整句
     ru_parts = []
     zh_parts = []
-
-    # 判断句检测：没有实义动词，或动词是 быть
-    is_copula = (not structure.get("verb")) or (structure.get("verb", {}).get("lemma") == "быть")
-
-    # 疑问句检测：如果原句以 ? 结尾，完整句也用 ?
-    is_question = structure.get("is_question", False)
 
     # 时间状语放句首
     for i, adv in enumerate(time_adv_forms):
