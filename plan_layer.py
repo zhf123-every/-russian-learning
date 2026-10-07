@@ -85,6 +85,9 @@ def normalize_llm_structure(structure, primary_tag=None):
             try:
                 parsed = morph.parse(obj["lemma"])[0]
                 obj["lemma"] = parsed.normal_form
+                # 如果是人名（Name），首字母大写
+                if "Name" in parsed.tag:
+                    obj["lemma"] = obj["lemma"].capitalize()
             except:
                 pass
         # 如果是带head的名词短语，也规范化head的lemma
@@ -92,6 +95,9 @@ def normalize_llm_structure(structure, primary_tag=None):
             try:
                 parsed = morph.parse(obj["head"]["lemma"])[0]
                 obj["head"]["lemma"] = parsed.normal_form
+                # 如果是人名（Name），首字母大写
+                if "Name" in parsed.tag:
+                    obj["head"]["lemma"] = obj["head"]["lemma"].capitalize()
             except:
                 pass
 
