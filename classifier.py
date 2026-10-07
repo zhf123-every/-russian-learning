@@ -78,7 +78,10 @@ def build_classify_prompt():
 - жить（住）不是运动动词（T36），它是普通第二变位法动词（T02）
 - говорить（说）不是反身动词（T37），它是普通第二变位法动词（T02）
 - Мне нужно + 不定式 是无人称句（T18），不是名词第三格（T21）
-- 【最重要】只要句子末尾是问号（?），或者以 Кто/Что/Где/Когда/Как/Почему/Сколько 开头，primary_tag 必须是 T23（疑问句）！不管里面还有什么其他成分！
+- 【最重要】只要句子末尾是问号（?），tags 里必须包含 T23，primary_tag 必须是 T23！不管里面还有什么其他成分！
+- 疑问句的句子结构：question_word（кто/что/где 等）就是句子的主语或状语，必须放到 subject 里！不要单独放 question_word 字段！
+  正确示例：Кто это? → subject = {{"lemma": "кто", "grammar": {{"case": "nom"}}}}, predicate = {{"lemma": "это", "grammar": {{}}}}
+  错误示例：subject = {{"lemma": "это"}}, question_word = {{"lemma": "кто"}}
 - 运动动词 T36 只包括：идти/пойти（T36a）、ехать/поехать（T36b）
 - 其他动词一律不归 T36！
 - T36a = идти/пойти（步行定向）
@@ -133,6 +136,15 @@ def classify_one(sentence_ru, sentence_zh):
 
     if tags:
         points = TEACHING_POINTS["points"]
+
+        # ===== 规则修正0：疑问句强制归 T23 =====
+        # 如果句子末尾是问号，强制 primary_tag = T23
+        if sentence_ru.strip().endswith("?"):
+            if "T23" not in tags:
+                tags.append("T23")
+            primary = "T23"
+            result["tags"] = tags
+            result["primary_tag"] = primary
 
         # ===== 规则修正1：T25 代词第四格，只有真的有代词宾格时才算 =====
         # 代词宾格形式：меня/тебя/его/её/нас/вас/их

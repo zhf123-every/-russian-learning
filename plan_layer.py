@@ -11,6 +11,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from templates import match_template
 
+# 动词-宾语匹配表：每个动词能接什么类型的宾语
+VERB_OBJECT_MAP = {
+    "читать": [
+        {"lemma": "книга", "grammar": {"case": "acc", "number": "sing", "gender": "fem", "animacy": "inanim"}},
+        {"lemma": "газета", "grammar": {"case": "acc", "number": "sing", "gender": "fem", "animacy": "inanim"}},
+    ],
+    "видеть": [
+        {"lemma": "человек", "grammar": {"case": "acc", "number": "sing", "gender": "masc", "animacy": "anim"}},
+        {"lemma": "дом", "grammar": {"case": "acc", "number": "sing", "gender": "masc", "animacy": "inanim"}},
+    ],
+    "знать": [
+        {"lemma": "Иван", "grammar": {"case": "acc", "number": "sing", "gender": "masc", "animacy": "anim"}},
+        {"lemma": "Анна", "grammar": {"case": "acc", "number": "sing", "gender": "fem", "animacy": "anim"}},
+    ],
+    "хотеть": [
+        {"lemma": "читать", "grammar": {"type": "inf"}},
+        {"lemma": "есть", "grammar": {"type": "inf"}},
+    ],
+}
+
 
 def build_plan_for_sentence(sentence):
     """
@@ -33,7 +53,7 @@ def build_plan_for_sentence(sentence):
         "object": structure.get("object") or structure.get("predicate"),  # 判断句用predicate
         "negation": structure.get("negation", False),
         "adverbial": structure.get("adverbial", []),
-        "is_question": structure.get("type") == "question",  # 疑问句标记
+        "is_question": structure.get("type") == "question" or primary_tag == "T23",  # 疑问句标记
     }
 
     # 特殊模板：不衍生（如疑问句）
@@ -47,6 +67,8 @@ def build_plan_for_sentence(sentence):
 
     # 生成衍生计划
     derivations = []
+    verb_lemma = structure.get("verb", {}).get("lemma", "")
+
     for deriv_tpl in template["seed_derivations"]:
         deriv_type = deriv_tpl["type"]
 
@@ -57,6 +79,10 @@ def build_plan_for_sentence(sentence):
         # 其他衍生：按 max 取多个候选
         candidates = deriv_tpl.get("candidates", [])
         max_count = deriv_tpl.get("max", 1)  # 默认取1个
+
+        # 换宾语：如果动词有专门的宾语候选列表，用它替换全局候选
+        if deriv_type == "换宾语" and verb_lemma in VERB_OBJECT_MAP:
+            candidates = VERB_OBJECT_MAP[verb_lemma]
 
         if deriv_type in ("换名词", "换主语", "换宾语"):
             for i, cand in enumerate(candidates[:max_count]):
