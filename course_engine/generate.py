@@ -251,6 +251,9 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
                 classified.append(cached)
                 cache_hit += 1
                 print(f"  ✅ 缓存命中", flush=True)
+                # 实时更新进度
+                if on_progress:
+                    on_progress(i+1, total)
                 continue
 
             # 缓存未命中，调大模型
@@ -282,6 +285,10 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
                     "classification_failed": True,
                     "error": str(e),
                 })
+            
+            # 实时更新进度（不管成功还是失败，都算完成一句）
+            if on_progress:
+                on_progress(i+1, total)
 
         t1 = time.time()
         print(f"[pipeline] 分类完成: {t1-t0:.1f}s，命中缓存 {cache_hit} 句，调大模型 {cache_miss} 句", flush=True)
