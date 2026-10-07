@@ -316,12 +316,14 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
 
         # 步骤4：执行所有层
         all_steps = []
-        global_gid = 1
+        global_gid = 1  # 全局gid计数器
         for layer in chapter_plan["layers"]:
-            layer_steps, layer_groups, layer_step_count = execute_layer_plan(layer["plan"])
+            layer_steps, layer_groups, layer_step_count = execute_layer_plan(layer["plan"], start_gid=global_gid)
             for step in layer_steps:
                 step["layer_id"] = layer.get("layer_id", 0)
                 all_steps.append(step)
+            # 更新全局gid计数器
+            global_gid += layer_groups
         t4 = time.time()
         print(f"[pipeline] 执行完成: {t4-t3:.1f}s, {len(all_steps)} 步", flush=True)
 

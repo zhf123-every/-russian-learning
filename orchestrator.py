@@ -265,7 +265,7 @@ def build_steps(structure, gid, zh_translation=""):
     return steps
 
 
-def execute_layer_plan(layer_plan):
+def execute_layer_plan(layer_plan, start_gid=1):
     """
     执行一层的计划，输出完整步骤
 
@@ -289,10 +289,11 @@ def execute_layer_plan(layer_plan):
             ...
         ]
     }
+    start_gid: 全局gid起始编号（不是每层从1开始）
     """
     all_steps = []
     seq = 1
-    gid = 1
+    gid = start_gid  # 从传入的起始gid开始，不是每层从1开始
 
     def _add_steps(new_steps):
         nonlocal seq
