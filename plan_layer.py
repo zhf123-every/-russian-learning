@@ -78,6 +78,10 @@ def normalize_llm_structure(structure, primary_tag=None):
         except:
             pass  # 解析失败就保留原 lemma
     
+    # 1.2 判断句（T07/T08）清空verb字段（это是指示代词，不是动词）
+    if primary_tag in ("T07", "T08"):
+        structure.pop("verb", None)
+    
     # 1.5 object lemma 规范化：变形后的形式 → 原形（друзья → друг）
     if structure.get("object") and isinstance(structure["object"], dict):
         obj = structure["object"]
