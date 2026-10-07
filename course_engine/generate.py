@@ -271,6 +271,36 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
         t4 = time.time()
         print(f"[pipeline] 执行完成: {t4-t3:.1f}s, {len(all_steps)} 步", flush=True)
 
+        # ===== 全局去重：跳过完整句重复的 G =====
+        # 按 gid 分组
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for step in all_steps:
+            groups[step["gid"]].append(step)
+
+        seen_sentences = set()
+        deduped_steps = []
+        skipped_groups = 0
+
+        for gid, gsteps in groups.items():
+            # 找完整句
+            full = next((s for s in gsteps if s.get("type") == "完整句"), None)
+            if not full:
+                deduped_steps.extend(gsteps)
+                continue
+
+            # 标准化完整句
+            normalized = full["ru"].strip().lower().rstrip('.').rstrip('?').strip()
+            if normalized in seen_sentences:
+                skipped_groups += 1
+                continue  # 跳过整个 G
+
+            seen_sentences.add(normalized)
+            deduped_steps.extend(gsteps)
+
+        all_steps = deduped_steps
+        print(f"[pipeline] 全局去重: 跳过 {skipped_groups} 个重复 G，剩余 {len(all_steps)} 步", flush=True)
+
         # 重新编号 seq 和 gid
         current_gid = 1
         current_seq = 1

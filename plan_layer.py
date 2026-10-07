@@ -56,6 +56,14 @@ def build_plan_for_sentence(sentence):
         "is_question": structure.get("type") == "question" or primary_tag == "T23",  # 疑问句标记
     }
 
+    # 自动修正：根据主语的人称和数，自动设置动词的人称和数
+    subj = base_structure.get("subject") or {}
+    subj_grammar = subj.get("grammar") or {}
+    if base_structure.get("verb") and subj_grammar.get("person") and subj_grammar.get("number"):
+        base_structure["verb"]["grammar"] = base_structure["verb"].get("grammar", {})
+        base_structure["verb"]["grammar"]["person"] = subj_grammar["person"]
+        base_structure["verb"]["grammar"]["number"] = subj_grammar["number"]
+
     # 特殊模板：不衍生（如疑问句）
     if template.get("no_derivation"):
         return {
@@ -67,7 +75,7 @@ def build_plan_for_sentence(sentence):
 
     # 生成衍生计划
     derivations = []
-    verb_lemma = structure.get("verb", {}).get("lemma", "")
+    verb_lemma = (structure.get("verb") or {}).get("lemma", "")
 
     for deriv_tpl in template["seed_derivations"]:
         deriv_type = deriv_tpl["type"]
@@ -116,10 +124,22 @@ def build_reuse_plan_for_sentence(sentence, template):
         "object": structure.get("object") or structure.get("predicate"),
         "negation": structure.get("negation", False),
         "adverbial": structure.get("adverbial", []),
+        "is_question": structure.get("type") == "question" or sentence.get("primary_tag") == "T23",
     }
+
+    # 特殊模板：不衍生（如疑问句）
+    if template.get("no_derivation"):
+        return {
+            "base_structure": base_structure,
+            "derivations": [],  # 没有衍生
+            "zh": sentence["zh"],
+            "no_derivation": True,
+        }
 
     # 生成复用句的衍生计划
     derivations = []
+    verb_lemma = (structure.get("verb") or {}).get("lemma", "")
+
     for deriv_tpl in template.get("reuse_derivations", []):
         deriv_type = deriv_tpl["type"]
 
@@ -130,6 +150,10 @@ def build_reuse_plan_for_sentence(sentence, template):
         # 其他衍生：按 max 取多个候选
         candidates = deriv_tpl.get("candidates", [])
         max_count = deriv_tpl.get("max", 1)
+
+        # 换宾语：如果动词有专门的宾语候选列表，用它替换全局候选
+        if deriv_type == "换宾语" and verb_lemma in VERB_OBJECT_MAP:
+            candidates = VERB_OBJECT_MAP[verb_lemma]
 
         if deriv_type in ("换名词", "换主语", "换宾语"):
             for cand in candidates[:max_count]:
