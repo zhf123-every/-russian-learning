@@ -187,8 +187,16 @@ def build_plan_for_sentence(sentence):
         # 换宾语：如果动词有专门的宾语候选列表，用它替换全局候选
         if deriv_type == "换宾语" and verb_lemma in VERB_OBJECT_MAP:
             candidates = VERB_OBJECT_MAP[verb_lemma]
+        
+        # 换表语：判断句用，candidates是按性别分池的字典，按主语性别选池
+        if deriv_type == "换表语" and isinstance(candidates, dict):
+            # 获取主语的性别
+            subj = base_structure.get("subject", {})
+            subj_gender = subj.get("grammar", {}).get("gender", "masc")
+            # 从对应性别池里选
+            candidates = candidates.get(subj_gender, candidates.get("masc", []))
 
-        if deriv_type in ("换名词", "换主语", "换宾语"):
+        if deriv_type in ("换名词", "换主语", "换宾语", "换表语"):
             for i, cand in enumerate(candidates[:max_count]):
                 deriv = {"type": deriv_type, "value": cand}
                 derivations.append(deriv)
@@ -248,8 +256,16 @@ def build_reuse_plan_for_sentence(sentence, template):
         # 换宾语：如果动词有专门的宾语候选列表，用它替换全局候选
         if deriv_type == "换宾语" and verb_lemma in VERB_OBJECT_MAP:
             candidates = VERB_OBJECT_MAP[verb_lemma]
+        
+        # 换表语：判断句用，candidates是按性别分池的字典，按主语性别选池
+        if deriv_type == "换表语" and isinstance(candidates, dict):
+            # 获取主语的性别
+            subj = base_structure.get("subject", {})
+            subj_gender = subj.get("grammar", {}).get("gender", "masc")
+            # 从对应性别池里选
+            candidates = candidates.get(subj_gender, candidates.get("masc", []))
 
-        if deriv_type in ("换名词", "换主语", "换宾语"):
+        if deriv_type in ("换名词", "换主语", "换宾语", "换表语"):
             for cand in candidates[:max_count]:
                 deriv = {"type": deriv_type, "value": cand}
                 derivations.append(deriv)

@@ -27,11 +27,19 @@ TEMPLATES = {
                 {"lemma": "она", "grammar": {"case": "nom", "number": "sing", "person": "3", "gender": "fem"}},
                 {"lemma": "мы", "grammar": {"case": "nom", "number": "plur", "person": "1"}},
             ], "max": 2},
-            {"type": "换宾语", "candidates": [
-                {"lemma": "Иван", "grammar": {"case": "acc", "number": "sing", "gender": "masc", "animacy": "anim"}},
-                {"lemma": "Анна", "grammar": {"case": "acc", "number": "sing", "gender": "fem", "animacy": "anim"}},
-                {"lemma": "мама", "grammar": {"case": "acc", "number": "sing", "gender": "fem", "animacy": "anim"}},
-            ], "max": 2},
+            # 判断句的表语换词：必须用主格，不是第四格
+            {"type": "换表语", "candidates": {
+                "masc": [
+                    {"lemma": "Иван", "grammar": {"case": "nom", "number": "sing", "gender": "masc"}},
+                    {"lemma": "папа", "grammar": {"case": "nom", "number": "sing", "gender": "masc"}},
+                    {"lemma": "друг", "grammar": {"case": "nom", "number": "sing", "gender": "masc"}},
+                ],
+                "fem": [
+                    {"lemma": "Анна", "grammar": {"case": "nom", "number": "sing", "gender": "fem"}},
+                    {"lemma": "мама", "grammar": {"case": "nom", "number": "sing", "gender": "fem"}},
+                    {"lemma": "книга", "grammar": {"case": "nom", "number": "sing", "gender": "fem"}},
+                ],
+            }, "max": 2},
         ],
     },
 

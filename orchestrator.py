@@ -72,6 +72,10 @@ def apply_derivation(structure, derivation):
 
     elif dtype == "换宾语":
         s["object"] = derivation["value"]
+    
+    elif dtype == "换表语":
+        # 判断句的表语就是object字段，只是候选用主格
+        s["object"] = derivation["value"]
 
     elif dtype == "加否定":
         s["negation"] = True
