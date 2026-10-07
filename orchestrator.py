@@ -4,9 +4,13 @@
 保留 morph_engine，重写编排层和组装层
 """
 from morph_engine import generate_form, generate_noun_phrase
+import pymorphy3
 import copy
 import json
 import os
+
+# 初始化pymorphy3（用于现场分析animacy）
+_morph = pymorphy3.MorphAnalyzer()
 
 # 加载词元中文表
 WORD_DICT = {}
@@ -79,10 +83,13 @@ def validate_judgment_agreement(structure):
     # 人称代词都是人
     PERSON_PRONOUNS = {"я", "ты", "он", "она", "оно", "мы", "вы", "они"}
     if subj_lemma in PERSON_PRONOUNS:
-        # 表语必须是有生命的（anim）
-        obj_animacy = obj_grammar.get("animacy")
-        if obj_animacy == "inan":
-            return False  # 人不能是无生命的东西（比如"我是房子"）
+        # 现场用pymorphy3分析表语的animacy，不依赖grammar字段
+        obj_lemma = obj.get("lemma", "")
+        if obj_lemma:
+            parsed = _morph.parse(obj_lemma)[0]
+            if "inan" in parsed.tag:
+                print(f"[validate] 拦截: {subj_lemma} {obj_lemma}（人不能是无生命的东西）", flush=True)
+                return False
     
     return True
 
