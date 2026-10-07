@@ -5896,6 +5896,68 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._json(200, {"ok": True, **task})
 
+    def _handle_admin_course_upload_csv(self, data):
+        """POST /api/admin/course/upload-csv —— 上传CSV文件，导入课程步骤"""
+        err = self._require_admin(data)
+        if err:
+            return err
+        
+        course_id = str(data.get("course_id") or "").strip()
+        unit_id = str(data.get("unit_id") or "").strip()
+        csv_content = str(data.get("csv_content") or "").strip()
+        
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id 或 unit_id"})
+        if not csv_content:
+            return self._json(400, {"ok": False, "error": "缺少 csv_content"})
+        
+        # 解析CSV
+        import csv
+        import io
+        steps = []
+        reader = csv.DictReader(io.StringIO(csv_content))
+        for row in reader:
+            steps.append({
+                "seq": int(row.get("序号", len(steps)+1)),
+                "gid": row.get("幕", "G_001"),
+                "step_type": row.get("类型", "积木"),
+                "ru": row.get("俄语", ""),
+                "zh": row.get("中文", ""),
+                "tag": row.get("语法标签", ""),
+            })
+        
+        if not steps:
+            return self._json(400, {"ok": False, "error": "CSV解析失败，没有有效行"})
+        
+        # 幂等：先删后插
+        def _save():
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    # 先删旧的
+                    cur.execute("DELETE FROM course_steps WHERE course_id=%s AND unit_id=%s", (course_id, unit_id))
+                    # 再插新的
+                    now_ms = int(time.time() * 1000)
+                    for step in steps:
+                        cur.execute("""
+                            INSERT INTO course_steps (course_id, unit_id, seq, gid, step_type, ru, zh, tag, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            course_id, unit_id, step["seq"], step["gid"], step["step_type"],
+                            step["ru"], step["zh"], step["tag"], now_ms
+                        ))
+                conn.commit()
+            finally:
+                conn.close()
+        
+        try:
+            _seg_execute(_save)
+        except Exception as e:
+            print(f"[upload_csv] 保存失败: {e}")
+            return self._json(500, {"ok": False, "error": f"保存失败: {e}"})
+        
+        return self._json(200, {"ok": True, "total_steps": len(steps)})
+
     def _update_task_status(self, task_id, status, progress=None, result=None, error=None):
         """更新任务状态（内部用）"""
         now_ms = int(time.time() * 1000)
@@ -7528,6 +7590,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_course_generate_async(data)
             if path == "/api/admin/course/task-status":
                 return self._handle_admin_course_task_status(data)
+            if path == "/api/admin/course/upload-csv":
+                return self._handle_admin_course_upload_csv(data)
             if path == "/api/admin/course/steps":
                 return self._handle_admin_course_steps(data)
             if path == "/api/admin/segments/update":
