@@ -32,6 +32,31 @@ VERB_OBJECT_MAP = {
 }
 
 
+def normalize_base_structure(structure, primary_tag):
+    """
+    把大模型的 structure 标准化成 orchestrator 需要的格式
+    种子句和复用句都调这个函数，保证逻辑一致
+    """
+    base = {
+        "subject": structure.get("subject"),
+        "verb": structure.get("verb"),
+        "object": structure.get("object") or structure.get("predicate"),  # 判断句用predicate
+        "negation": structure.get("negation", False),
+        "adverbial": structure.get("adverbial", []),
+        "is_question": structure.get("type") == "question" or primary_tag == "T23",  # 疑问句标记
+    }
+
+    # 自动修正：根据主语的人称和数，自动设置动词的人称和数
+    subj = base.get("subject") or {}
+    subj_grammar = subj.get("grammar") or {}
+    if base.get("verb") and subj_grammar.get("person") and subj_grammar.get("number"):
+        base["verb"]["grammar"] = base["verb"].get("grammar", {})
+        base["verb"]["grammar"]["person"] = subj_grammar["person"]
+        base["verb"]["grammar"]["number"] = subj_grammar["number"]
+
+    return base
+
+
 def build_plan_for_sentence(sentence):
     """
     为单句生成编排计划
@@ -46,23 +71,8 @@ def build_plan_for_sentence(sentence):
     if not template:
         raise Exception(f"缺少 {primary_tag} 的模板（句子：{sentence['ru']}）")
 
-    # 把大模型的 structure 转换成 orchestrator 需要的格式
-    base_structure = {
-        "subject": structure.get("subject"),
-        "verb": structure.get("verb"),
-        "object": structure.get("object") or structure.get("predicate"),  # 判断句用predicate
-        "negation": structure.get("negation", False),
-        "adverbial": structure.get("adverbial", []),
-        "is_question": structure.get("type") == "question" or primary_tag == "T23",  # 疑问句标记
-    }
-
-    # 自动修正：根据主语的人称和数，自动设置动词的人称和数
-    subj = base_structure.get("subject") or {}
-    subj_grammar = subj.get("grammar") or {}
-    if base_structure.get("verb") and subj_grammar.get("person") and subj_grammar.get("number"):
-        base_structure["verb"]["grammar"] = base_structure["verb"].get("grammar", {})
-        base_structure["verb"]["grammar"]["person"] = subj_grammar["person"]
-        base_structure["verb"]["grammar"]["number"] = subj_grammar["number"]
+    # 标准化 base_structure（公共函数）
+    base_structure = normalize_base_structure(structure, primary_tag)
 
     # 特殊模板：不衍生（如疑问句）
     if template.get("no_derivation"):
@@ -117,15 +127,10 @@ def build_reuse_plan_for_sentence(sentence, template):
     输出: {base_structure, derivations, zh}
     """
     structure = sentence.get("structure") or {}
+    primary_tag = sentence.get("primary_tag", "")
 
-    base_structure = {
-        "subject": structure.get("subject"),
-        "verb": structure.get("verb"),
-        "object": structure.get("object") or structure.get("predicate"),
-        "negation": structure.get("negation", False),
-        "adverbial": structure.get("adverbial", []),
-        "is_question": structure.get("type") == "question" or sentence.get("primary_tag") == "T23",
-    }
+    # 标准化 base_structure（公共函数，和种子句用同一个）
+    base_structure = normalize_base_structure(structure, primary_tag)
 
     # 特殊模板：不衍生（如疑问句）
     if template.get("no_derivation"):
