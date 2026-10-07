@@ -77,6 +77,47 @@ def validate_judgment_agreement(structure):
     return True
 
 
+def validate_g(gsteps, structure):
+    """
+    校验一个 G 是否合法。
+    返回 (is_valid, reason)
+    """
+    # 1. 至少有一个完整句
+    full = next((s for s in gsteps if s.get("type") == "完整句"), None)
+    if not full:
+        return False, "没有完整句"
+    
+    # 2. 完整句的 ru 不能为空
+    if not full.get("ru", "").strip():
+        return False, "完整句为空"
+    
+    # 3. 完整句不能是"单个词"（至少2个词）
+    words = full["ru"].rstrip('.').rstrip('?').strip().split()
+    if len(words) < 2:
+        return False, f"完整句只有一个词: {full['ru']}"
+    
+    # 4. 不能出现原形动词（быть 是原形，不应该出现在完整句里）
+    # 注意：есть 作为"有"的意思是可以的，但作为系动词的原形不行
+    INVALID_WORDS = ["быть"]  # быть 是原形，绝对不能出现
+    for w in words:
+        if w.lower() in INVALID_WORDS:
+            return False, f"出现原形动词: {w}"
+    
+    # 5. 不能出现"名词 + не" 这种崩坏语序（не必须在动词前或表语前）
+    if len(words) >= 2:
+        if words[-1].lower() == "не":
+            return False, "не 在句尾"
+    
+    # 6. 完整性校验：至少要有主语或状语
+    if structure:
+        has_subject = bool(structure.get("subject"))
+        has_adverbial = bool(structure.get("adverbial"))
+        if not has_subject and not has_adverbial:
+            return False, "没有主语也没有状语"
+    
+    return True, "OK"
+
+
 def apply_derivation(structure, derivation):
     """
     应用一个衍生指令，返回新的句子结构
@@ -348,9 +389,14 @@ def execute_layer_plan(layer_plan, start_gid=1):
 
         # G_01：原句
         steps = build_steps(base, f"G_{gid:02d}", zh)
-        _add_steps(steps)
-        all_steps.extend(steps)
-        gid += 1
+        # 完整性校验：不通过就跳过这个G
+        valid, reason = validate_g(steps, base)
+        if not valid:
+            print(f"[validate] G_{gid:02d} 被拦截: {reason}", flush=True)
+        else:
+            _add_steps(steps)
+            all_steps.extend(steps)
+            gid += 1
 
         # 如果是 no_derivation 类型，不执行衍生
         if is_no_derivation:
@@ -363,6 +409,11 @@ def execute_layer_plan(layer_plan, start_gid=1):
                 if not validate_judgment_agreement(new_struct):
                     continue
                 steps = build_steps(new_struct, f"G_{gid:02d}", zh)
+                # 完整性校验：不通过就跳过这个G
+                valid, reason = validate_g(steps, new_struct)
+                if not valid:
+                    print(f"[validate] G_{gid:02d} 被拦截: {reason}", flush=True)
+                    continue
                 _add_steps(steps)
                 all_steps.extend(steps)
                 gid += 1
