@@ -10,7 +10,7 @@ import os
 # 智谱 API
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 ZHIPU_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-ZHIPU_MODEL = "glm-4-plus"
+ZHIPU_MODEL = "glm-4-flash"
 
 # 加载教学点字典
 with open(os.path.join(os.path.dirname(__file__), "teaching_points.json"), "r", encoding="utf-8") as f:
