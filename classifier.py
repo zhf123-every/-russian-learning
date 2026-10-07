@@ -134,17 +134,18 @@ def classify_one(sentence_ru, sentence_zh):
     tags = result.get("tags", [])
     primary = result.get("primary_tag", "")
 
+    # ===== 兜底规则：疑问句强制归 T23（不管 tags 是不是空的）=====
+    question_words = ["кто", "что", "где", "когда", "как", "почему", "какой", "какая", "какое", "какие"]
+    first_word = sentence_ru.strip().lower().split()[0] if sentence_ru.strip() else ""
+    if first_word in question_words or sentence_ru.strip().endswith("?"):
+        if "T23" not in tags:
+            tags.append("T23")
+        primary = "T23"
+        result["tags"] = tags
+        result["primary_tag"] = primary
+
     if tags:
         points = TEACHING_POINTS["points"]
-
-        # ===== 规则修正0：疑问句强制归 T23 =====
-        # 如果句子末尾是问号，强制 primary_tag = T23
-        if sentence_ru.strip().endswith("?"):
-            if "T23" not in tags:
-                tags.append("T23")
-            primary = "T23"
-            result["tags"] = tags
-            result["primary_tag"] = primary
 
         # ===== 规则修正1：T25 代词第四格，只有真的有代词宾格时才算 =====
         # 代词宾格形式：меня/тебя/его/её/нас/вас/их
@@ -210,6 +211,14 @@ def classify_one(sentence_ru, sentence_zh):
         if correct_primary and primary != correct_primary:
             result["primary_tag"] = correct_primary
             result["reason"] += f" [规则修正：大模型选了{primary}，实际应为{correct_primary}]"
+
+    # ===== 最终兜底：疑问句强制 T23（不管前面怎么算的）=====
+    question_words = ["кто", "что", "где", "когда", "как", "почему", "какой", "какая", "какое", "какие"]
+    first_word = sentence_ru.strip().lower().split()[0] if sentence_ru.strip() else ""
+    if first_word in question_words or sentence_ru.strip().endswith("?"):
+        result["primary_tag"] = "T23"
+        if "T23" not in result["tags"]:
+            result["tags"].append("T23")
 
     return result
 
