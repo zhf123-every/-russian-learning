@@ -155,14 +155,27 @@ def build_steps(structure, gid, zh_translation=""):
             obj_lemma = obj["head"].get("lemma", "")
         object_zh = get_zh(obj_lemma)
 
-    # 状语
-    adv_forms = []
-    adv_zhs = []
+    # 状语：分成时间状语和地点状语
+    time_adv_forms = []
+    time_adv_zhs = []
+    place_adv_forms = []
+    place_adv_zhs = []
     for adv in structure.get("adverbial", []):
         head = adv.get("head", {})
+        adv_type = adv.get("type", "")  # time / place
         if "lemma" in head:
-            adv_forms.append(generate_form(head["lemma"], head.get("grammar", {})))
-            adv_zhs.append(get_zh(head["lemma"]))
+            form = generate_form(head["lemma"], head.get("grammar", {}))
+            zh = get_zh(head["lemma"])
+            if adv_type == "time":
+                time_adv_forms.append(form)
+                time_adv_zhs.append(zh)
+            else:
+                place_adv_forms.append(form)
+                place_adv_zhs.append(zh)
+    
+    # 合并成 adv_forms（保持原有顺序，用于积木）
+    adv_forms = time_adv_forms + place_adv_forms
+    adv_zhs = time_adv_zhs + place_adv_zhs
 
     has_neg = structure.get("negation", False)
 
@@ -178,7 +191,9 @@ def build_steps(structure, gid, zh_translation=""):
         steps.append({"type": "积木", "ru": verb_form, "zh": verb_zh, "tag": "谓语", "gid": gid})
 
     if object_form:
-        steps.append({"type": "积木", "ru": object_form, "zh": object_zh, "tag": "宾语", "gid": gid})
+        # 判断句里的名词是表语，不是宾语
+        obj_tag = "表语" if is_copula else "宾语"
+        steps.append({"type": "积木", "ru": object_form, "zh": object_zh, "tag": obj_tag, "gid": gid})
 
     for i, adv in enumerate(adv_forms):
         steps.append({"type": "积木", "ru": adv, "zh": adv_zhs[i] if i < len(adv_zhs) else "", "tag": f"状语{i+1}", "gid": gid})
@@ -192,6 +207,12 @@ def build_steps(structure, gid, zh_translation=""):
 
     # 疑问句检测：如果原句以 ? 结尾，完整句也用 ?
     is_question = structure.get("is_question", False)
+
+    # 时间状语放句首
+    for i, adv in enumerate(time_adv_forms):
+        ru_parts.append(adv)
+        if i < len(time_adv_zhs):
+            zh_parts.append(time_adv_zhs[i])
 
     if subject_form:
         ru_parts.append(subject_form)
@@ -222,10 +243,11 @@ def build_steps(structure, gid, zh_translation=""):
         ru_parts.append(object_form)
         zh_parts.append(object_zh)
 
-    for i, adv in enumerate(adv_forms):
+    # 地点状语放句尾
+    for i, adv in enumerate(place_adv_forms):
         ru_parts.append(adv)
-        if i < len(adv_zhs):
-            zh_parts.append(adv_zhs[i])
+        if i < len(place_adv_zhs):
+            zh_parts.append(place_adv_zhs[i])
 
     # 标点：疑问句用 ?，其他用 .
     punct = "?" if is_question else "."

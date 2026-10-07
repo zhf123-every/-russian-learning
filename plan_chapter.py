@@ -55,8 +55,31 @@ def plan_chapter(classified_sentences):
             groups[tag] = []
         groups[tag].append(s)
 
-    # 步骤2：按难度排序（level低的在前）
-    sorted_tags = sorted(groups.keys(), key=lambda t: (points.get(t, {}).get("level", 99), t))
+    # 步骤2：按教学顺序排序（level低的在前，同level按教学顺序）
+    # 教学顺序：判断句 → 主谓宾 → 物主代词 → 形容词 → 复合谓语 → 扩展成分
+    TEACHING_ORDER = {
+        "T07": 1,   # 判断句
+        "T08": 2,   # 判断句否定
+        "T05": 3,   # 名词第四格
+        "T06": 4,   # 动词否定
+        "T09": 5,   # 物主代词
+        "T10": 6,   # 形容词一致
+        "T11": 7,   # 形容词第四格
+        "T19": 8,   # 动词+不定式
+        "T18": 9,   # 无人称句
+        "T14": 10,  # 地点状语
+        "T15": 11,  # 过去时
+        "T23": 12,  # 疑问句
+        "T25": 13,  # 代词第四格
+        "T27": 14,  # 未来时
+    }
+
+    def sort_key(tag):
+        level = points.get(tag, {}).get("level", 99)
+        order = TEACHING_ORDER.get(tag, 999)  # 没在表里的，排最后
+        return (level, order, tag)
+
+    sorted_tags = sorted(groups.keys(), key=sort_key)
 
     # 步骤3：合并单句层（和相邻层合并）
     layers = []
