@@ -234,7 +234,7 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
         # 步骤1：分类（带缓存）
         print(f"[pipeline] 开始分类 {total} 句...", flush=True)
 
-        from .cache import get_cached_classification, save_classification_to_cache
+        from cache import get_cached_classification, save_classification_to_cache
 
         classified = []
         cache_hit = 0
