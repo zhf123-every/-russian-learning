@@ -10,6 +10,53 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from templates import match_template
+import pymorphy3
+
+morph = pymorphy3.MorphAnalyzer()
+
+# 主语 lemma 到 person/number 的映射（唯一事实来源）
+SUBJ_PERSON_NUMBER = {
+    "я":     {"person": "1", "number": "sing"},
+    "ты":    {"person": "2", "number": "sing"},
+    "он":    {"person": "3", "number": "sing"},
+    "она":   {"person": "3", "number": "sing"},
+    "оно":   {"person": "3", "number": "sing"},
+    "мы":    {"person": "1", "number": "plur"},
+    "вы":    {"person": "2", "number": "plur"},
+    "они":   {"person": "3", "number": "plur"},
+    "вы":    {"person": "2", "number": "plur"},  # 敬称
+}
+
+
+def derive_subject_person_number(subject):
+    """
+    从主语结构里推导 person 和 number。
+    优先级：
+    1. 如果主语 grammar 里有 person/number，直接用
+    2. 如果主语 lemma 在 SUBJ_PERSON_NUMBER 字典里，用字典
+    3. 否则，用 pymorphy3 分析主语的数，推导为第三人称
+    """
+    if not subject:
+        return {}
+
+    subj_grammar = subject.get("grammar") or {}
+    # 优先级1：grammar 里有就直接用
+    if subj_grammar.get("person") and subj_grammar.get("number"):
+        return {"person": subj_grammar["person"], "number": subj_grammar["number"]}
+
+    # 优先级2：lemma 在字典里
+    lemma = (subject.get("lemma") or "").lower()
+    if lemma in SUBJ_PERSON_NUMBER:
+        return SUBJ_PERSON_NUMBER[lemma]
+
+    # 优先级3：名词主语，用 pymorphy3 分析数，默认第三人称
+    try:
+        parsed = morph.parse(subject.get("lemma", ""))[0]
+        number = "plur" if "plur" in parsed.tag else "sing"
+        return {"person": "3", "number": number}
+    except:
+        return {"person": "3", "number": "sing"}
+
 
 # 动词-宾语匹配表：每个动词能接什么类型的宾语
 VERB_OBJECT_MAP = {
@@ -46,13 +93,14 @@ def normalize_base_structure(structure, primary_tag):
         "is_question": structure.get("type") == "question" or primary_tag == "T23",  # 疑问句标记
     }
 
-    # 自动修正：根据主语的人称和数，自动设置动词的人称和数
-    subj = base.get("subject") or {}
-    subj_grammar = subj.get("grammar") or {}
-    if base.get("verb") and subj_grammar.get("person") and subj_grammar.get("number"):
-        base["verb"]["grammar"] = base["verb"].get("grammar", {})
-        base["verb"]["grammar"]["person"] = subj_grammar["person"]
-        base["verb"]["grammar"]["number"] = subj_grammar["number"]
+    # 自动修正：根据主语的 person/number，自动设置动词的 person/number
+    # 统一调用 derive_subject_person_number，不要自己查表
+    if base.get("verb"):
+        pn = derive_subject_person_number(base.get("subject"))
+        if pn:
+            base["verb"]["grammar"] = base["verb"].get("grammar", {})
+            base["verb"]["grammar"]["person"] = pn["person"]
+            base["verb"]["grammar"]["number"] = pn["number"]
 
     return base
 
