@@ -256,8 +256,7 @@ def generate_chapter_course_async(sentences: list, on_progress=None) -> dict:
             # 缓存未命中，调大模型
             cache_miss += 1
             try:
-                from classifier import classify_one
-                from teaching_points_loader import TEACHING_POINTS
+                from classifier import classify_one, TEACHING_POINTS
                 points = TEACHING_POINTS["points"]
 
                 r = classify_one(ru, zh)
