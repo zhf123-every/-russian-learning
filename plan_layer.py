@@ -88,6 +88,12 @@ def normalize_llm_structure(structure, primary_tag=None):
                 # 如果是人名（Name），首字母大写
                 if "Name" in parsed.tag:
                     obj["lemma"] = obj["lemma"].capitalize()
+                # 自动加上animacy字段
+                obj["grammar"] = obj.get("grammar", {})
+                if "anim" in parsed.tag:
+                    obj["grammar"]["animacy"] = "anim"
+                elif "inan" in parsed.tag:
+                    obj["grammar"]["animacy"] = "inan"
             except:
                 pass
         # 如果是带head的名词短语，也规范化head的lemma
