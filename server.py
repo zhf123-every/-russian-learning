@@ -1229,7 +1229,7 @@ def ai_chat(base_url, key, model, messages):
     print("[AI] model:", model, "| messages:", len(messages), "条 | key:", key_preview)
     payload = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
     headers = {"Authorization": "Bearer " + key}
-    status, body = http_call("POST", url, payload, headers, timeout=60)
+    status, body = http_call("POST", url, payload, headers, timeout=120)
     print("[AI] 响应 status:", status, "| body前500字:", body[:500])
     if status == 200:
         try:
