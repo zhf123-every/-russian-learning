@@ -6457,7 +6457,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 conn = _quest_conn()
                 try:
-                    with conn.cursor() as cur:
+                    with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
                         cur.execute("SELECT file_name, file_base64 FROM unit_source_files WHERE course_id=%s AND unit_id=%s",
                                     (course_id, unit_id))
                         row = cur.fetchone()
