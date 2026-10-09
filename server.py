@@ -1578,6 +1578,8 @@ def _quest_init():
                     pass
                 # P1-F：系统设置（key-value；VIP 套餐价格/站点信息后台可配，缺省用常量）
                 cur.execute("CREATE TABLE IF NOT EXISTS settings (k VARCHAR(64) PRIMARY KEY, v TEXT, updated_at BIGINT NOT NULL)")
+                # 课时原始 Excel 自动保存（后台上传课程的唯一入口落库；课时编辑页可下载原文件修改后重传）
+                cur.execute("CREATE TABLE IF NOT EXISTS unit_source_files (id VARCHAR(64) PRIMARY KEY, course_id VARCHAR(64) NOT NULL, unit_id VARCHAR(64) NOT NULL, file_name VARCHAR(255) NOT NULL DEFAULT '', file_base64 LONGTEXT, updated_at BIGINT NOT NULL DEFAULT 0, UNIQUE KEY uk_source_unit (unit_id))")
                 _seed_settings(cur)
                 # 迁移：users 加 VIP 到期时间（毫秒时间戳；终身=2100-01-01；NULL/0=无 VIP）
                 try:
@@ -3504,6 +3506,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": "未配置管理员密钥（ADMIN_KEY）"})
         ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
         return self._json(200, {"ok": ok})
+
+    # ---------- 课时原始 Excel 自动保存 / 下载（上传课程唯一入口落库；修改原文件后重传即覆盖） ----------
+    def _handle_admin_unit_source_save(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        course_id = (data.get("course_id") or "").strip()
+        unit_id = (data.get("unit_id") or "").strip()
+        file_name = (data.get("file_name") or "").strip() or "lesson.xlsx"
+        file_base64 = (data.get("file_base64") or "").strip()
+        if not course_id or not unit_id:
+            return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+        if not file_base64:
+            return self._json(400, {"ok": False, "error": "缺少 file_base64"})
+        try:
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO unit_source_files (id, course_id, unit_id, file_name, file_base64, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) "
+                        "ON DUPLICATE KEY UPDATE course_id=VALUES(course_id), file_name=VALUES(file_name), "
+                        "file_base64=VALUES(file_base64), updated_at=VALUES(updated_at)",
+                        ("usf_" + hashlib.md5(unit_id.encode("utf-8")).hexdigest()[:16],
+                         course_id, unit_id, file_name, file_base64, int(time.time() * 1000)),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return self._json(200, {"ok": True, "saved": True, "file_name": file_name})
+        except Exception as e:
+            print(f"[unit-source] 保存失败: {e}")
+            return self._json(500, {"ok": False, "error": "保存失败: " + str(e)})
 
     # ---------- P1-A 用户管理（仅 admin 可调用） ----------
 
@@ -6407,6 +6442,44 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(query)
             data = {"task_id": params.get("task_id", [""])[0], "adminKey": params.get("adminKey", [""])[0]}
             return self._handle_admin_course_task_status(data)
+        # 课时原始 Excel 下载（admin：?course_id=&unit_id=&token=<JWT>；返回原始文件二进制，供下载修改后重传）
+        if path == "/api/admin/units/source-file":
+            query = urllib.parse.urlparse(self.path).query
+            q = urllib.parse.parse_qs(query)
+            course_id = (q.get("course_id", [""])[0] or "").strip()
+            unit_id = (q.get("unit_id", [""])[0] or "").strip()
+            tok = (q.get("token", [""])[0] or "").strip()
+            if not (course_id and unit_id):
+                return self._json(400, {"ok": False, "error": "缺少 course_id / unit_id"})
+            payload = decode_token(SECRET_KEY, tok) if (tok and SECRET_KEY) else None
+            if not (payload and payload.get("role") == "admin"):
+                return self._json(403, {"ok": False, "error": "无权限：仅管理员可下载"})
+            try:
+                conn = _quest_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT file_name, file_base64 FROM unit_source_files WHERE course_id=%s AND unit_id=%s",
+                                    (course_id, unit_id))
+                        row = cur.fetchone()
+                finally:
+                    conn.close()
+                if not row or not row["file_base64"]:
+                    return self._json(404, {"ok": False, "error": "该课时尚未保存过 Excel 文件"})
+                file_name = row["file_name"] or "lesson.xlsx"
+                try:
+                    raw = base64.b64decode(row["file_base64"])
+                except Exception:
+                    raw = row["file_base64"].encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(file_name)}")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return None
+            except Exception as e:
+                print(f"[unit-source] 下载失败: {e}")
+                return self._json(500, {"ok": False, "error": "下载失败: " + str(e)})
         if path == "/api/reviews/list":
             return self._handle_reviews_list()
         if path == "/api/videos/resolve":
@@ -7596,6 +7669,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_admin_course_steps(data)
             if path == "/api/admin/segments/update":
                 return self._handle_admin_segments_update(data)
+            if path == "/api/admin/units/source-file":
+                return self._handle_admin_unit_source_save(data)
             if path == "/api/learning/progress/save":
                 return self._handle_learning_progress_save(data)
             if path == "/api/learning/progress":
