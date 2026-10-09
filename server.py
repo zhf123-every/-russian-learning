@@ -6442,6 +6442,26 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(query)
             data = {"task_id": params.get("task_id", [""])[0], "adminKey": params.get("adminKey", [""])[0]}
             return self._handle_admin_course_task_status(data)
+        # 课时原始 Excel 列表（admin：?token=<JWT>；返回所有已保存课时的原始 Excel 元数据，供 Excel 管理页展示）
+        if path == "/api/admin/units/source-files":
+            query = urllib.parse.urlparse(self.path).query
+            q = urllib.parse.parse_qs(query)
+            tok = (q.get("token", [""])[0] or "").strip()
+            payload = decode_token(SECRET_KEY, tok) if (tok and SECRET_KEY) else None
+            if not (payload and payload.get("role") == "admin"):
+                return self._json(403, {"ok": False, "error": "无权限：仅管理员可查看"})
+            try:
+                conn = _quest_conn()
+                try:
+                    with conn.cursor(cursor=pymysql.cursors.DictCursor) as cur:
+                        cur.execute("SELECT course_id, unit_id, file_name, updated_at FROM unit_source_files ORDER BY updated_at DESC")
+                        rows = cur.fetchall()
+                finally:
+                    conn.close()
+                return self._json(200, {"ok": True, "files": rows})
+            except Exception as e:
+                print(f"[unit-source] 列表失败: {e}")
+                return self._json(500, {"ok": False, "error": "列表失败: " + str(e)})
         # 课时原始 Excel 下载（admin：?course_id=&unit_id=&token=<JWT>；返回原始文件二进制，供下载修改后重传）
         if path == "/api/admin/units/source-file":
             query = urllib.parse.urlparse(self.path).query
