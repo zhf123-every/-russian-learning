@@ -222,22 +222,11 @@ def _b2_presign_get(key, expires=604800):
 
 
 def _b2_resolve(url):
-    """把 b2://key 换成可访问链接；http(s) 外链原样返回；失败返回空串。
-    封面类 key（thumbs/covers 目录）走固定公共 URL（不预签名，浏览器可缓存，所有人秒出）；
-    视频/其他资源走预签名 URL（不公开）。"""
+    """把 b2://key 换成预签名播放链接；http(s) 外链原样返回；失败返回空串。"""
     if not url:
         return ""
     if url.startswith(_B2_PREFIX):
         key = url[len(_B2_PREFIX):]
-        # 封面类资源走公共 URL（固定链接，浏览器缓存）
-        if key.startswith("thumbs/") or key.startswith("covers/") or key.startswith("images/"):
-            if _B2_ENDPOINT and _B2_BUCKET:
-                # 公共 URL 格式：https://{endpoint}/{bucket}/{key}
-                ep = _B2_ENDPOINT.rstrip("/")
-                if not ep.startswith("http"):
-                    ep = "https://" + ep
-                return f"{ep}/{_B2_BUCKET}/{key}"
-        # 其他资源（视频等）走预签名
         try:
             return _b2_presign_get(key) or ""
         except Exception as e:
