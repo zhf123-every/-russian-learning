@@ -6122,23 +6122,26 @@ class Handler(BaseHTTPRequestHandler):
                 # 理论不发生：占位行 status 是 generating；防御性视为未生成
                 g["status"] = "generating"
 
-        # 关联 quest_words 表：用 segments 拼出 russian 文本 → 匹配 quest_statements → 拿逐词标注
+        # 关联 quest_words 表：用中文翻译匹配 quest_statements → 拿逐词标注
+        # 中文比 russian 稳定（无大小写/标点/变格差异），匹配成功率更高
         try:
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    # 一次性查这门课所有 statements + words，构建 russian → words 映射
-                    cur.execute("SELECT id, russian FROM quest_statements WHERE course_id=%s", (course_id,))
+                    # 一次性查这门课所有 statements，构建 chinese → words 映射
+                    cur.execute("SELECT id, chinese FROM quest_statements WHERE course_id=%s", (course_id,))
                     stmt_rows = cur.fetchall()
                     stmt_map = {}
-                    for sid, russian in stmt_rows:
-                        stmt_map[russian.strip().lower()] = sid
-                    # 对每个 group，拼出 russian，匹配 statement_id，查 words
+                    for sid, chinese in stmt_rows:
+                        key = (chinese or "").strip()
+                        if key:
+                            stmt_map[key] = sid
+                    # 对每个 group，用中文翻译匹配 statement_id，查 words
                     for g in groups.values():
                         if g["status"] != "ok" or not g["segments"]:
                             continue
-                        ru = " ".join(s["text"] for s in g["segments"] if s.get("text")).strip()
-                        sid = stmt_map.get(ru.lower())
+                        zh = (g.get("translation") or "").strip()
+                        sid = stmt_map.get(zh)
                         if not sid:
                             continue
                         cur.execute("SELECT lemma, form, pos, grammatical_case, number, gender, syntactic_role FROM quest_words WHERE statement_id=%s ORDER BY `order`", (sid,))
