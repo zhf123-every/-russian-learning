@@ -6121,6 +6121,37 @@ class Handler(BaseHTTPRequestHandler):
             if not g["segments"] and g["status"] == "ok":
                 # 理论不发生：占位行 status 是 generating；防御性视为未生成
                 g["status"] = "generating"
+
+        # 关联 quest_words 表：用 segments 拼出 russian 文本 → 匹配 quest_statements → 拿逐词标注
+        try:
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    # 一次性查这门课所有 statements + words，构建 russian → words 映射
+                    cur.execute("SELECT id, russian FROM quest_statements WHERE course_id=%s", (course_id,))
+                    stmt_rows = cur.fetchall()
+                    stmt_map = {}
+                    for sid, russian in stmt_rows:
+                        stmt_map[russian.strip().lower()] = sid
+                    # 对每个 group，拼出 russian，匹配 statement_id，查 words
+                    for g in groups.values():
+                        if g["status"] != "ok" or not g["segments"]:
+                            continue
+                        ru = " ".join(s["text"] for s in g["segments"] if s.get("text")).strip()
+                        sid = stmt_map.get(ru.lower())
+                        if not sid:
+                            continue
+                        cur.execute("SELECT lemma, form, pos, grammatical_case, number, gender, syntactic_role FROM quest_words WHERE statement_id=%s ORDER BY `order`", (sid,))
+                        word_rows = cur.fetchall()
+                        g["words"] = [
+                            {"lemma": w[0], "form": w[1], "pos": w[2], "grammarCase": w[3], "number": w[4], "gender": w[5], "syntacticRole": w[6]}
+                            for w in word_rows
+                        ]
+            finally:
+                conn.close()
+        except Exception as e:
+            print("[segments] 关联 words 失败（忽略，前端本地词典兜底）：", e)
+
         return self._json(200, {"ok": True, "items": list(groups.values())})
 
     def _handle_admin_user_status(self, data):
