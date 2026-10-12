@@ -6856,12 +6856,21 @@ class Handler(BaseHTTPRequestHandler):
     # 允许的俄语 edge-tts 声音（女声 Svetlana / 男声 Dmitry）
     TTS_VOICE = "ru-RU-SvetlanaNeural"
     TTS_VOICES = {
+        # 微软 edge-tts 神经发音
         "female": "ru-RU-SvetlanaNeural",
         "svetlana": "ru-RU-SvetlanaNeural",
         "male": "ru-RU-DmitryNeural",
         "dmitry": "ru-RU-DmitryNeural",
         "ru-ru-svetlananeural": "ru-RU-SvetlanaNeural",
         "ru-ru-dmitryneural": "ru-RU-DmitryNeural",
+        # Yandex SpeechKit 神经发音（需要 Yandex API Key）
+        "alena": "alena",  # 女声，标准
+        "filipp": "filipp",  # 男声，标准
+        "ermil": "ermil",  # 男声，儿童
+        "jane": "jane",  # 女声
+        "madirus": "madirus",  # 男声
+        "omazh": "omazh",  # 女声
+        "zahar": "zahar",  # 男声
     }
 
     def _pick_tts_voice(self, voice):
@@ -6931,6 +6940,13 @@ class Handler(BaseHTTPRequestHandler):
         """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。
         voice 可为 female/male（或具体声音名），缺省为俄语女声 Svetlana。"""
         use_voice = self._pick_tts_voice(voice)
+        # alena/filipp 是 Yandex 音色名，edge-tts 不识别；回退路径映射到微软等效音色，
+        # 保证未配置 Yandex 密钥时「发音类型」的男女声切换依然有效
+        _EDGE_ALIAS = {
+            "alena": "ru-RU-SvetlanaNeural",
+            "filipp": "ru-RU-DmitryNeural",
+        }
+        use_voice = _EDGE_ALIAS.get(str(use_voice).strip().lower(), use_voice)
         try:
             import asyncio
             import edge_tts
