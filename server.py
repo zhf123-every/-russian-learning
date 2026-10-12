@@ -3529,7 +3529,7 @@ class Handler(BaseHTTPRequestHandler):
                     # 3. 对每个词，找包含它的 statement，补全 quest_words
                     updated = 0
                     inserted = 0
-                    for wid, wzh, wtag in [(r[2], r[3], r[4]) for r in word_rows]:
+                    for wid, wzh, wtag in [(r[1], r[2], r[3]) for r in word_rows]:
                         # 解析 tag：人称代词第四格 → pos=代词, case=第四格
                         pos = ""
                         case = ""
