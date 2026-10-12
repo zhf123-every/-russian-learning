@@ -6889,6 +6889,11 @@ class Handler(BaseHTTPRequestHandler):
         if not text or not text.strip():
             return None
         voice = voice or os.environ.get("YANDEX_TTS_VOICE", "alena")
+        # 仅接受 Yandex 已知音色名；female/male（微软神经发音人 Svetlana/Dmitry）
+        # 等非 Yandex 音色直接跳过，走 edge 回退，避免无效调用
+        _YANDEX_KNOWN = {"alena", "filipp", "ermil", "jane", "madirus", "omazh", "zahar", "levitan"}
+        if str(voice).strip().lower() not in _YANDEX_KNOWN:
+            return None
         # 缓存
         import hashlib
         cache_dir = os.path.join(BASE_DIR, "audio_cache")
