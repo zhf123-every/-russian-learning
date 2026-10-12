@@ -3520,8 +3520,8 @@ class Handler(BaseHTTPRequestHandler):
                     cur.execute("SELECT DISTINCT step_type, COUNT(*) as cnt FROM course_steps GROUP BY step_type")
                     type_rows = cur.fetchall()
                     type_list = [f"{r[0]}({r[1]})" for r in type_rows]
-                    # 1. 查所有"词"类型的 course_steps 行（放宽匹配：包含"词"的）
-                    cur.execute("SELECT course_id, ru, zh, tag FROM course_steps WHERE step_type LIKE '%词%' AND ru != ''")
+                    # 1. 查所有"积木"类型的 course_steps 行（你 Excel 里的"词"被存成了"积木"）
+                    cur.execute("SELECT course_id, ru, zh, tag FROM course_steps WHERE step_type = '积木' AND ru != ''")
                     word_rows = cur.fetchall()
                     # 2. 查所有 quest_statements
                     cur.execute("SELECT id, course_id, russian FROM quest_statements")
