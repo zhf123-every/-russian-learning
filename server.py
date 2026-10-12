@@ -3517,7 +3517,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with conn.cursor() as cur:
                     # 1. 查所有"词"类型的 course_steps 行
-                    cur.execute("SELECT course_id, unit_id, ru, zh, tag FROM course_steps WHERE step_type IN ('词','单词') AND ru != ''")
+                    cur.execute("SELECT course_id, ru, zh, tag FROM course_steps WHERE step_type IN ('词','单词') AND ru != ''")
                     word_rows = cur.fetchall()
                     # 2. 查所有 quest_statements
                     cur.execute("SELECT id, course_id, russian FROM quest_statements")
