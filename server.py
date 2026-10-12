@@ -3516,8 +3516,12 @@ class Handler(BaseHTTPRequestHandler):
             conn = _quest_conn()
             try:
                 with conn.cursor() as cur:
-                    # 1. 查所有"词"类型的 course_steps 行
-                    cur.execute("SELECT course_id, ru, zh, tag FROM course_steps WHERE step_type IN ('词','单词') AND ru != ''")
+                    # 0. 查所有 step_type 值（调试用）
+                    cur.execute("SELECT DISTINCT step_type, COUNT(*) as cnt FROM course_steps GROUP BY step_type")
+                    type_rows = cur.fetchall()
+                    type_list = [f"{r[0]}({r[1]})" for r in type_rows]
+                    # 1. 查所有"词"类型的 course_steps 行（放宽匹配：包含"词"的）
+                    cur.execute("SELECT course_id, ru, zh, tag FROM course_steps WHERE step_type LIKE '%词%' AND ru != ''")
                     word_rows = cur.fetchall()
                     # 2. 查所有 quest_statements
                     cur.execute("SELECT id, course_id, russian FROM quest_statements")
@@ -3569,7 +3573,7 @@ class Handler(BaseHTTPRequestHandler):
                                                 (f"w_{hash(str(stmt_id)+wid) & 0xffffffff}", stmt_id, wid, wid, pos, case, syntactic_role))
                                     inserted += 1
                     conn.commit()
-                    return self._json(200, {"ok": True, "updated": updated, "inserted": inserted, "word_rows": len(word_rows)})
+                    return self._json(200, {"ok": True, "updated": updated, "inserted": inserted, "word_rows": len(word_rows), "step_types": type_list})
             finally:
                 conn.close()
         except Exception as e:
