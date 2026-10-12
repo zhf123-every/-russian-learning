@@ -3507,6 +3507,74 @@ class Handler(BaseHTTPRequestHandler):
         ok = (data.get("adminKey") or "").strip() == ADMIN_KEY
         return self._json(200, {"ok": ok})
 
+    # ---------- 迁移：把 course_steps 里"词"类型的行拆成 quest_words 逐词标注 ----------
+    def _handle_admin_migrate_words(self, data):
+        err = self._require_admin(data)
+        if err:
+            return err
+        try:
+            conn = _quest_conn()
+            try:
+                with conn.cursor() as cur:
+                    # 1. 查所有"词"类型的 course_steps 行
+                    cur.execute("SELECT course_id, unit_id, ru, zh, tag FROM course_steps WHERE step_type IN ('词','单词') AND ru != ''")
+                    word_rows = cur.fetchall()
+                    # 2. 查所有 quest_statements
+                    cur.execute("SELECT id, course_id, russian FROM quest_statements")
+                    stmt_rows = cur.fetchall()
+                    # 3. 对每个词，找包含它的 statement，补全 quest_words
+                    updated = 0
+                    inserted = 0
+                    for wid, wzh, wtag in [(r[2], r[3], r[4]) for r in word_rows]:
+                        # 解析 tag：人称代词第四格 → pos=代词, case=第四格
+                        pos = ""
+                        case = ""
+                        syntactic_role = ""
+                        if "代词" in wtag:
+                            pos = "代词"
+                        elif "动词" in wtag:
+                            pos = "动词"
+                        elif "名词" in wtag:
+                            pos = "名词"
+                        elif "副词" in wtag:
+                            pos = "副词"
+                        elif "介词" in wtag:
+                            pos = "介词"
+                        if "第一格" in wtag:
+                            case = "主格"
+                        elif "第二格" in wtag:
+                            case = "属格"
+                        elif "第三格" in wtag:
+                            case = "与格"
+                        elif "第四格" in wtag:
+                            case = "宾格"
+                        elif "第五格" in wtag:
+                            case = "工具格"
+                        elif "第六格" in wtag:
+                            case = "前置格"
+                        # 找包含这个词的 statement
+                        for stmt_id, stmt_course, stmt_russian in stmt_rows:
+                            if wid.lower() in stmt_russian.lower():
+                                # 检查 quest_words 里有没有这个词
+                                cur.execute("SELECT id FROM quest_words WHERE statement_id=%s AND form=%s", (stmt_id, wid))
+                                existing = cur.fetchone()
+                                if existing:
+                                    # 更新现有记录
+                                    cur.execute("UPDATE quest_words SET pos=%s, grammatical_case=%s WHERE id=%s", (pos, case, existing[0]))
+                                    updated += 1
+                                else:
+                                    # 插入新记录
+                                    cur.execute("""INSERT INTO quest_words (id, statement_id, `order`, lemma, form, pos, grammatical_case, syntactic_role, chunk_type)
+                                                   VALUES (%s, %s, 0, %s, %s, %s, %s, %s, 'single_word')""",
+                                                (f"w_{hash(str(stmt_id)+wid) & 0xffffffff}", stmt_id, wid, wid, pos, case, syntactic_role))
+                                    inserted += 1
+                    conn.commit()
+                    return self._json(200, {"ok": True, "updated": updated, "inserted": inserted, "word_rows": len(word_rows)})
+            finally:
+                conn.close()
+        except Exception as e:
+            return self._json(500, {"ok": False, "error": str(e)})
+
     # ---------- 课时原始 Excel 自动保存 / 下载（上传课程唯一入口落库；修改原文件后重传即覆盖） ----------
     def _handle_admin_unit_source_save(self, data):
         err = self._require_admin(data)
@@ -5959,6 +6027,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ru": row.get("俄语", ""),
                 "zh": row.get("中文", ""),
                 "tag": row.get("语法标签", ""),
+                "syntactic_tag": row.get("句子成分标签", ""),
             })
         
         if not steps:
@@ -7776,6 +7845,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_course_complete(data)
             if path == "/api/admin/check":
                 return self._handle_admin_check(data)
+            if path == "/api/admin/migrate-words":
+                return self._handle_admin_migrate_words(data)
             if path == "/api/subs":
                 url = (data.get("url") or "").strip()
                 if not url:
