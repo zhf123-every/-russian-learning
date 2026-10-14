@@ -6942,7 +6942,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _tts_edge(self, text, voice=None, rate=None):
-        """调用 edge-tts 生成俄语音频（mp3），带自动重试。成功返回音频字节，失败返回 None。
+        """调用 edge-tts 生成俄语音频（mp3），带磁盘缓存 + 自动重试。成功返回音频字节，失败返回 None。
         voice 可为 female/male（或具体声音名），缺省为俄语女声 Svetlana。"""
         use_voice = self._pick_tts_voice(voice)
         # alena/filipp 是 Yandex 音色名，edge-tts 不识别；回退路径映射到微软等效音色，
@@ -6952,6 +6952,18 @@ class Handler(BaseHTTPRequestHandler):
             "filipp": "ru-RU-DmitryNeural",
         }
         use_voice = _EDGE_ALIAS.get(str(use_voice).strip().lower(), use_voice)
+        # 磁盘缓存：同句同音色二次请求直接秒回（edge-tts 每次合成 1-3s，是进页发音延迟主因）
+        import hashlib
+        cache_dir = os.path.join(BASE_DIR, "audio_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_key = hashlib.md5(f"edge_{text}_{use_voice}".encode("utf-8")).hexdigest()
+        cache_file = os.path.join(cache_dir, f"{cache_key}.mp3")
+        if os.path.isfile(cache_file):
+            try:
+                with open(cache_file, "rb") as f:
+                    return f.read()
+            except Exception:
+                pass
         try:
             import asyncio
             import edge_tts
@@ -6978,7 +6990,13 @@ class Handler(BaseHTTPRequestHandler):
 
                     asyncio.run(_collect())
                     if chunks:
-                        return b"".join(chunks)
+                        audio = b"".join(chunks)
+                        try:
+                            with open(cache_file, "wb") as f:
+                                f.write(audio)
+                        except Exception:
+                            pass
+                        return audio
                 except Exception as e:
                     last_err = e
                     if attempt < 2:
