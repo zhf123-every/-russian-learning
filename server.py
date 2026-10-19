@@ -1054,6 +1054,58 @@ def _groq_whisper_transcribe(wav_path):
     return None, "Groq返回格式异常：" + raw[:200]
 
 
+def _yandex_stt_transcribe(wav_path):
+    """Yandex SpeechKit 同步语音识别（俄语母语引擎，发音容错最佳）。
+
+    与 TTS 共用 YANDEX_API_KEY；需要 YANDEX_FOLDER_ID（Yandex Cloud 中 SpeechKit
+    所在目录的 folderId）。音频需 16kHz 单声道 PCM（_to_wav16k 输出即此格式）。
+    返回 (text, err)；成功时 err=None。"""
+    if not YANDEX_API_KEY:
+        return None, "未配置 YANDEX_API_KEY"
+    if not YANDEX_FOLDER_ID:
+        return None, "未配置 YANDEX_FOLDER_ID（Yandex Cloud 目录 ID，需手动设置）"
+    try:
+        import wave
+        with wave.open(wav_path, "rb") as w:
+            if w.getframerate() != 16000 or w.getnchannels() != 1:
+                return None, "Yandex 识别需要 16kHz 单声道 PCM"
+            pcm = w.readframes(w.getnframes())
+    except Exception as e:
+        return None, "Yandex 读取音频失败：" + str(e)
+    if len(pcm) < 16000:  # 少于 1 秒音频，识别没有意义
+        return None, "音频过短"
+    url = ("https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+           "?lang=ru-RU&folderId=%s&format=lpcm&sampleRateHertz=16000&profanityFilter=false"
+           % urllib.parse.quote(YANDEX_FOLDER_ID))
+    req = urllib.request.Request(
+        url,
+        data=pcm,
+        headers={"Authorization": "Api-Key " + YANDEX_API_KEY, "Content-Type": "application/octet-stream"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            detail = ""
+        return None, "Yandex识别请求失败：HTTP %s %s" % (e.code, detail)
+    except Exception as e:
+        return None, "Yandex识别请求失败：" + str(e)
+    try:
+        j = json.loads(raw)
+    except Exception:
+        return None, "Yandex返回非JSON：" + raw[:200]
+    if isinstance(j, dict):
+        if j.get("result"):
+            return j["result"].strip(), None
+        if j.get("error_code") or j.get("error_message"):
+            return None, "Yandex错误：%s %s" % (j.get("error_code", ""), j.get("error_message", ""))
+    return None, "Yandex返回格式异常：" + raw[:200]
+
+
 def _cf_whisper_transcribe(wav_path):
     """Cloudflare Workers AI Whisper 识别（免费，无需 Groq 账号）。
     返回 (text, err)；成功时 err=None。
@@ -2135,6 +2187,7 @@ def _log_operation(user_id, username, action, target_type="", target_id="", deta
 # ==========================================================
 
 YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY", "")
+YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID", "")
 YANDEX_TTS_VOICE = os.environ.get("YANDEX_TTS_VOICE", "alena")
 TTS_CACHE_DIR = os.path.join(BASE_DIR, "audio_cache")
 os.makedirs(TTS_CACHE_DIR, exist_ok=True)
@@ -6590,6 +6643,9 @@ class Handler(BaseHTTPRequestHandler):
                 "groq_prefix": (GROQ_API_KEY[:4] + "***") if GROQ_API_KEY else "",
                 "zhipu_configured": bool(ZHIPU_API_KEY),
                 "zhipu_prefix": (ZHIPU_API_KEY[:4] + "***") if ZHIPU_API_KEY else "",
+                "yandex_configured": bool(YANDEX_API_KEY and YANDEX_FOLDER_ID),
+                "yandex_key_prefix": (YANDEX_API_KEY[:4] + "***") if YANDEX_API_KEY else "",
+                "yandex_folder_id": bool(YANDEX_FOLDER_ID),
                 "cf_configured": bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN),
                 "cf_account_prefix": (CLOUDFLARE_ACCOUNT_ID[:6] + "***") if CLOUDFLARE_ACCOUNT_ID else "",
                 "vosk_ready": bool(_vosk_model),
@@ -6877,7 +6933,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._asr_diag.append({"engine": "groq", "ok": False, "err": repr(e)[:120]})
                     print("[asr] Groq 转写异常：", repr(e))
 
-            # ---- 优先2：Cloudflare Workers AI Whisper（免费，无需注册新服务）----
+            # ---- 优先2：Yandex SpeechKit（俄语母语引擎，发音容错最佳；需 YANDEX_FOLDER_ID）----
+            if YANDEX_API_KEY and YANDEX_FOLDER_ID:
+                try:
+                    text, err = _yandex_stt_transcribe(wav_path)
+                    if err is None and text and _is_cyrillic(text):
+                        self._asr_diag.append({"engine": "yandex", "ok": True, "text": text[:60]})
+                        return text, [], None
+                    self._asr_diag.append({"engine": "yandex", "ok": False, "err": err or "非俄语结果", "text": (text or "")[:60]})
+                    print("[asr] Yandex 转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
+                except Exception as e:
+                    self._asr_diag.append({"engine": "yandex", "ok": False, "err": repr(e)[:120]})
+                    print("[asr] Yandex 转写异常：", repr(e))
+
+            # ---- 优先3：Cloudflare Workers AI Whisper（免费，无需注册新服务）----
             if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
                 try:
                     text, err = _cf_whisper_transcribe(wav_path)
