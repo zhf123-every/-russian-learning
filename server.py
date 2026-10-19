@@ -962,6 +962,7 @@ def _glm_asr_transcribe(wav_path):
 
     body = b""
     body += _field("model", "glm-asr-2512")
+    body += _field("language", "ru")
     body += _field("stream", "false")
     body += ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
              "Content-Type: audio/wav\r\n\r\n" % boundary).encode("utf-8")
@@ -1054,7 +1055,7 @@ def _cf_whisper_transcribe(wav_path):
     req = urllib.request.Request(
         "https://api.cloudflare.com/client/v4/accounts/%s/ai/run/@cf/openai/whisper"
         % CLOUDFLARE_ACCOUNT_ID,
-        data=json.dumps({"audio": list(audio_bytes)}).encode("utf-8"),
+        data=json.dumps({"audio": list(audio_bytes), "language": "ru"}).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
             "Content-Type": "application/json",
@@ -6763,13 +6764,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return None, "音频解码失败：" + str(e)
 
+    def _is_cyrillic(text):
+        """识别结果是否俄语：字母中西里尔字符占比。俄语用西里尔字母；波兰语等拉丁语系占比≈0。"""
+        t = (text or "").strip()
+        if not t:
+            return False
+        letters = [ch for ch in t if ch.isalpha()]
+        if not letters:
+            return False
+        cyr = sum(1 for ch in letters if "\u0400" <= ch <= "\u04FF")
+        return cyr / len(letters) >= 0.5
+
     def _transcribe_audio_bytes(self, audio_bytes):
         """把音频字节保存为临时文件 → 转 WAV → 转写。
 
         转写引擎优先级：
           1. Groq Whisper-large-v3（快、准，俄语最优，配置 GROQ_API_KEY 后启用）
-          2. 智谱 GLM-ASR-2512（高精度多语言，配置 ZHIPU_API_KEY 后启用，音频≤30秒）
-          3. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
+          2. Cloudflare Workers AI Whisper（免费，无需注册新服务）
+          3. 智谱 GLM-ASR-2512（高精度多语言，配置 ZHIPU_API_KEY 后启用，音频≤30秒）
+          4. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
+        所有引擎均强制指定俄语；识别结果若不含西里尔字母（如误判为波兰语），
+        判定为语言误判，继续降级直至 Vosk（俄语专用模型，必出俄语）。
         返回 (user_text, segments, error)；成功时 error 为 None。
         所有临时文件在内部清理。"""
         fd, audio_path = tempfile.mkstemp(prefix="recite_", suffix=".webm")
@@ -6796,9 +6811,9 @@ class Handler(BaseHTTPRequestHandler):
             if GROQ_API_KEY:
                 try:
                     text, err = _groq_whisper_transcribe(wav_path)
-                    if err is None and text:
+                    if err is None and text and _is_cyrillic(text):
                         return text, [], None
-                    print("[asr] Groq 转写失败，切换下一引擎：", err)
+                    print("[asr] Groq 转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
                     print("[asr] Groq 转写异常：", repr(e))
 
@@ -6806,9 +6821,9 @@ class Handler(BaseHTTPRequestHandler):
             if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
                 try:
                     text, err = _cf_whisper_transcribe(wav_path)
-                    if err is None and text:
+                    if err is None and text and _is_cyrillic(text):
                         return text, [], None
-                    print("[asr] Cloudflare 转写失败，切换下一引擎：", err)
+                    print("[asr] Cloudflare 转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
                     print("[asr] Cloudflare 转写异常：", repr(e))
 
@@ -6828,9 +6843,9 @@ class Handler(BaseHTTPRequestHandler):
                             os.unlink(clipped)
                         except OSError:
                             pass
-                    if err is None and text:
+                    if err is None and text and _is_cyrillic(text):
                         return text, [], None
-                    print("[asr] 智谱转写失败，切换下一引擎：", err)
+                    print("[asr] 智谱转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
                     print("[asr] 智谱转写异常：", repr(e))
 
