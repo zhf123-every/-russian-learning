@@ -1104,6 +1104,40 @@ def _is_cyrillic(text):
     return cyr / len(letters) >= 0.5
 
 
+def _norm_ru(s):
+    """俄语文本归一化：小写、ё→е、去组合重音、只留字母数字空格。"""
+    import re
+    import unicodedata
+    t = (s or "").lower().replace("ё", "е")
+    t = unicodedata.normalize("NFD", t)
+    t = re.sub(r"[\u0300-\u036f]", "", t)
+    t = re.sub(r"[^а-яa-z0-9\s]", " ", t)
+    return " ".join(t.split())
+
+
+def _fuzzy_match_context(text, candidates, threshold=0.62):
+    """发音容错：识别文本与本课句子做归一化字符相似度匹配。
+    学生发音不标准（如 Я искитая → Я из Китая）时，若与某候选句足够接近，
+    返回该正确句子；否则返回 None（保持识别原文）。"""
+    from difflib import SequenceMatcher
+    nt = _norm_ru(text)
+    if not nt:
+        return None
+    best, bs = None, 0.0
+    for c in candidates:
+        c = (c or "").strip()
+        if not c:
+            continue
+        nc = _norm_ru(c)
+        if not nc:
+            continue
+        r = SequenceMatcher(None, nt, nc).ratio()
+        # 前缀/包含也算接近（识别可能多出词或少词）
+        if r > bs:
+            bs, best = r, c
+    return best if bs >= threshold else None
+
+
 def _normalize_russian_text(text):
     """用智谱把不标准/有拼写错误的俄语修正为规范写法（拼写、大小写、标点）。
     不改变原意、不增删内容；识别本就正确时原样返回。"""
@@ -7143,16 +7177,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_transcribe_audio(self, data):
         """独立音频转写接口：接收 base64 音频，返回转写文本和分段。
-        text 为规范化后的规范俄语句子（识别不标准也会被修正），raw 为原始识别文本。"""
+        text 为规范化后的规范俄语句子（识别不标准也会被修正），raw 为原始识别文本。
+        context 可选：本课俄语句子列表，用于发音容错——识别结果与某句足够接近时自动纠回正确句。"""
         audio_bytes, err = self._decode_audio_data_url(data.get("audio"))
         if err:
             return self._json(200, {"ok": False, "error": err})
         user_text, segs, err = self._transcribe_audio_bytes(audio_bytes)
         if err:
             return self._json(200, {"ok": False, "error": err, "asr_debug": getattr(self, "_asr_diag", [])})
-        corrected = _normalize_russian_text(user_text) if user_text else user_text
-        return self._json(200, {"ok": True, "text": corrected or user_text, "raw": user_text, "segments": segs,
-                                "asr_debug": getattr(self, "_asr_diag", [])})
+        corrected = user_text
+        fuzzy = None
+        ctx = data.get("context")
+        if user_text and isinstance(ctx, list) and ctx:
+            cands = []
+            for c in ctx:
+                if isinstance(c, str):
+                    cands.append(c)
+                elif isinstance(c, dict):
+                    cands.append(c.get("ru") or c.get("text") or "")
+            fuzzy = _fuzzy_match_context(user_text, cands)
+        if fuzzy:
+            corrected = fuzzy
+        elif user_text:
+            corrected = _normalize_russian_text(user_text) or user_text
+        return self._json(200, {"ok": True, "text": corrected, "raw": user_text, "segments": segs,
+                                "fuzzy": fuzzy, "asr_debug": getattr(self, "_asr_diag", [])})
 
     def _handle_tutor(self, data):
         """俄语AI对话教练：按等级(A1/A2/B1/B2)自由对话 + 语法纠错引导。
