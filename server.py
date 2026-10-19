@@ -6528,6 +6528,17 @@ class Handler(BaseHTTPRequestHandler):
                 "model": AI_MODEL,
                 "key_prefix": (AI_API_KEY[:4] + "***") if AI_API_KEY else "",
             })
+        if path == "/api/asr-health":
+            return self._json(200, {
+                "ok": True,
+                "groq_configured": bool(GROQ_API_KEY),
+                "groq_prefix": (GROQ_API_KEY[:4] + "***") if GROQ_API_KEY else "",
+                "zhipu_configured": bool(ZHIPU_API_KEY),
+                "zhipu_prefix": (ZHIPU_API_KEY[:4] + "***") if ZHIPU_API_KEY else "",
+                "cf_configured": bool(CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN),
+                "cf_account_prefix": (CLOUDFLARE_ACCOUNT_ID[:6] + "***") if CLOUDFLARE_ACCOUNT_ID else "",
+                "vosk_ready": bool(_vosk_model),
+            })
         if path == "/api/stream":
             return self._handle_stream()
         if path == "/api/square/list":
