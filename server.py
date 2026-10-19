@@ -6795,8 +6795,10 @@ class Handler(BaseHTTPRequestHandler):
           4. Vosk 本地俄语模型（兜底，512MB 实例友好，无时长限制）
         所有引擎均强制指定俄语；识别结果若不含西里尔字母（如误判为波兰语），
         判定为语言误判，继续降级直至 Vosk（俄语专用模型，必出俄语）。
+        每次引擎尝试写入 self._asr_diag（供 /api/transcribe-audio 诊断返回）。
         返回 (user_text, segments, error)；成功时 error 为 None。
         所有临时文件在内部清理。"""
+        self._asr_diag = []
         fd, audio_path = tempfile.mkstemp(prefix="recite_", suffix=".webm")
         try:
             with os.fdopen(fd, "wb") as f:
@@ -6822,9 +6824,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     text, err = _groq_whisper_transcribe(wav_path)
                     if err is None and text and _is_cyrillic(text):
+                        self._asr_diag.append({"engine": "groq", "ok": True, "text": text[:60]})
                         return text, [], None
+                    self._asr_diag.append({"engine": "groq", "ok": False, "err": err or "非俄语结果", "text": (text or "")[:60]})
                     print("[asr] Groq 转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
+                    self._asr_diag.append({"engine": "groq", "ok": False, "err": repr(e)[:120]})
                     print("[asr] Groq 转写异常：", repr(e))
 
             # ---- 优先2：Cloudflare Workers AI Whisper（免费，无需注册新服务）----
@@ -6832,9 +6837,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     text, err = _cf_whisper_transcribe(wav_path)
                     if err is None and text and _is_cyrillic(text):
+                        self._asr_diag.append({"engine": "cloudflare", "ok": True, "text": text[:60]})
                         return text, [], None
+                    self._asr_diag.append({"engine": "cloudflare", "ok": False, "err": err or "非俄语结果", "text": (text or "")[:60]})
                     print("[asr] Cloudflare 转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
+                    self._asr_diag.append({"engine": "cloudflare", "ok": False, "err": repr(e)[:120]})
                     print("[asr] Cloudflare 转写异常：", repr(e))
 
             # ---- 优先2：智谱高精度识别 ----
@@ -6854,9 +6862,12 @@ class Handler(BaseHTTPRequestHandler):
                         except OSError:
                             pass
                     if err is None and text and _is_cyrillic(text):
+                        self._asr_diag.append({"engine": "glm", "ok": True, "text": text[:60]})
                         return text, [], None
+                    self._asr_diag.append({"engine": "glm", "ok": False, "err": err or "非俄语结果", "text": (text or "")[:60]})
                     print("[asr] 智谱转写失败或非俄语结果，切换下一引擎：", err or (text or "")[:40])
                 except Exception as e:
+                    self._asr_diag.append({"engine": "glm", "ok": False, "err": repr(e)[:120]})
                     print("[asr] 智谱转写异常：", repr(e))
 
             # ---- 兜底：Vosk 本地俄语 ----
@@ -7097,9 +7108,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "error": err})
         user_text, segs, err = self._transcribe_audio_bytes(audio_bytes)
         if err:
-            return self._json(200, {"ok": False, "error": err})
+            return self._json(200, {"ok": False, "error": err, "asr_debug": getattr(self, "_asr_diag", [])})
         corrected = _normalize_russian_text(user_text) if user_text else user_text
-        return self._json(200, {"ok": True, "text": corrected or user_text, "raw": user_text, "segments": segs})
+        return self._json(200, {"ok": True, "text": corrected or user_text, "raw": user_text, "segments": segs,
+                                "asr_debug": getattr(self, "_asr_diag", [])})
 
     def _handle_tutor(self, data):
         """俄语AI对话教练：按等级(A1/A2/B1/B2)自由对话 + 语法纠错引导。
