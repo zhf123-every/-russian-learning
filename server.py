@@ -843,6 +843,10 @@ def _to_wav16k(src_path):
         resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
         with av.open(dst, "w", format="wav") as out:
             out_stream = out.add_stream("pcm_s16le", rate=16000)
+            try:
+                out_stream.layout = "mono"
+            except Exception:
+                pass
             for frame in container.decode(stream):
                 for f in resampler.resample(frame):
                     for packet in out_stream.encode(f):
@@ -6856,16 +6860,46 @@ class Handler(BaseHTTPRequestHandler):
             if ZHIPU_API_KEY:
                 try:
                     src = wav_path
+                    ff = get_ffmpeg()
+                    mono = None
+                    if ff:
+                        # 智谱要求严格单声道 WAV（code 1214）；PyAV 修复后通常已是 mono，这里再保险转一遍
+                        try:
+                            fd2, mono = tempfile.mkstemp(prefix="asr_mono_", suffix=".wav")
+                            os.close(fd2)
+                            r = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y",
+                                                "-i", wav_path, "-ar", "16000", "-ac", "1",
+                                                "-c:a", "pcm_s16le", mono],
+                                               capture_output=True, text=True, timeout=120)
+                            if r.returncode == 0 and os.path.isfile(mono):
+                                src = mono
+                            else:
+                                try:
+                                    os.unlink(mono)
+                                except OSError:
+                                    pass
+                                mono = None
+                        except Exception:
+                            try:
+                                os.unlink(mono)
+                            except OSError:
+                                pass
+                            mono = None
                     clipped = None
-                    dur = _wav_duration(wav_path)
+                    dur = _wav_duration(src)
                     if dur and dur > 30:
-                        clipped = _clip_wav_30s(wav_path)
+                        clipped = _clip_wav_30s(src)
                         if clipped:
                             src = clipped
                     text, err = _glm_asr_transcribe(src)
                     if clipped:
                         try:
                             os.unlink(clipped)
+                        except OSError:
+                            pass
+                    if mono:
+                        try:
+                            os.unlink(mono)
                         except OSError:
                             pass
                     if err is None and text and _is_cyrillic(text):
