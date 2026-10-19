@@ -962,7 +962,6 @@ def _glm_asr_transcribe(wav_path):
 
     body = b""
     body += _field("model", "glm-asr-2512")
-    body += _field("language", "ru")
     body += _field("stream", "false")
     body += ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
              "Content-Type: audio/wav\r\n\r\n" % boundary).encode("utf-8")
@@ -1055,7 +1054,7 @@ def _cf_whisper_transcribe(wav_path):
     req = urllib.request.Request(
         "https://api.cloudflare.com/client/v4/accounts/%s/ai/run/@cf/openai/whisper"
         % CLOUDFLARE_ACCOUNT_ID,
-        data=json.dumps({"audio": list(audio_bytes), "language": "ru"}).encode("utf-8"),
+        data=json.dumps({"audio": list(audio_bytes)}).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + CLOUDFLARE_API_TOKEN,
             "Content-Type": "application/json",
