@@ -980,6 +980,12 @@ def _glm_asr_transcribe(wav_path):
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
             raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            detail = ""
+        return None, "智谱接口请求失败：HTTP %s %s" % (e.code, detail)
     except Exception as e:
         return None, "智谱接口请求失败：" + str(e)
     try:
@@ -1080,6 +1086,18 @@ def _cf_whisper_transcribe(wav_path):
         if errs:
             return None, "Cloudflare错误：" + str(errs[0] if isinstance(errs, list) else errs)[:200]
     return None, "Cloudflare返回格式异常：" + raw[:200]
+
+
+def _is_cyrillic(text):
+    """识别结果是否俄语：字母中西里尔字符占比。俄语用西里尔字母；波兰语等拉丁语系占比≈0。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    letters = [ch for ch in t if ch.isalpha()]
+    if not letters:
+        return False
+    cyr = sum(1 for ch in letters if "\u0400" <= ch <= "\u04FF")
+    return cyr / len(letters) >= 0.5
 
 
 def _normalize_russian_text(text):
@@ -6773,17 +6791,6 @@ class Handler(BaseHTTPRequestHandler):
             return base64.b64decode(audio_b64), None
         except Exception as e:
             return None, "音频解码失败：" + str(e)
-
-    def _is_cyrillic(text):
-        """识别结果是否俄语：字母中西里尔字符占比。俄语用西里尔字母；波兰语等拉丁语系占比≈0。"""
-        t = (text or "").strip()
-        if not t:
-            return False
-        letters = [ch for ch in t if ch.isalpha()]
-        if not letters:
-            return False
-        cyr = sum(1 for ch in letters if "\u0400" <= ch <= "\u04FF")
-        return cyr / len(letters) >= 0.5
 
     def _transcribe_audio_bytes(self, audio_bytes):
         """把音频字节保存为临时文件 → 转 WAV → 转写。
