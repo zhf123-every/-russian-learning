@@ -1068,9 +1068,13 @@ def _yandex_stt_transcribe(wav_path):
         import wave
         with wave.open(wav_path, "rb") as w:
             if w.getframerate() != 16000 or w.getnchannels() != 1:
-                return None, "Yandex 识别需要 16kHz 单声道 PCM"
+                return None, "Yandex 识别需要 16kHz 单声道 PCM（实际：%dHz %d声道）" % (w.getframerate(), w.getnchannels())
             pcm = w.readframes(w.getnframes())
+            print("[Yandex] 读取音频成功：%d帧, %dHz, %d声道" % (w.getnframes(), w.getframerate(), w.getnchannels()))
     except Exception as e:
+        import traceback
+        err_detail = traceback.format_exc()
+        print("[Yandex] 读取音频失败：", err_detail)
         return None, "Yandex 读取音频失败：" + str(e)
     if len(pcm) < 16000:  # 少于 1 秒音频，识别没有意义
         return None, "音频过短"
