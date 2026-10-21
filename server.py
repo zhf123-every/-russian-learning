@@ -70,7 +70,7 @@ DIST_DIR = os.path.join(BASE_DIR, "dist")
 # AI 中转配置：支持多种环境变量名，按优先级 fallback（密钥/地址从环境变量读取，前端不再持有密钥）
 AI_BASE_URL = os.environ.get("AI_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com"
 AI_API_KEY = os.environ.get("AI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-AI_MODEL = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OPENAI_MODEL") or "deepseek-chat"
+AI_MODEL = os.environ.get("AI_MODEL") or os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OPENAI_MODEL") or "deepseek-flash"
 # 智谱 AI Key：用于高精度语音识别（GLM-ASR-2512）与俄语规范化修正，在 https://bigmodel.cn 申请
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY") or ""
 # Groq Key：Whisper-large-v3 语音识别（快、准，俄语最优），在 https://console.groq.com 免费申请
@@ -1356,6 +1356,40 @@ def ai_chat(base_url, key, model, messages):
         error_msg = "AI 接口返回 %s：%s" % (status, body[:500])
     log_api_call("AI Chat Error", [], error_msg)
     raise RuntimeError(error_msg)
+
+
+def ai_chat_stream(base_url, key, model, messages, on_chunk):
+    """调用 OpenAI 兼容接口，流式输出。on_chunk(text) 每收到一段文本就回调。返回完整文本。"""
+    if "bigmodel.cn" in base_url or "z.ai" in base_url:
+        url = base_url.rstrip("/") + "/chat/completions"
+    else:
+        url = base_url.rstrip("/") + "/v1/chat/completions"
+    payload = {"model": model, "messages": messages, "temperature": 0.2, "stream": True}
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    full_text = ""
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            # 逐行读取 SSE 格式响应
+            for line in resp:
+                line = line.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                chunk = line[6:]  # 去掉 "data: " 前缀
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                    delta = obj["choices"][0].get("delta", {}).get("content", "")
+                    if delta:
+                        full_text += delta
+                        on_chunk(delta)
+                except Exception:
+                    continue
+    except Exception as e:
+        raise RuntimeError("AI 流式请求失败：" + str(e))
+    return full_text
 
 
 def _parse_json_block(content):
