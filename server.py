@@ -6957,6 +6957,16 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return None, None, "音频转码失败（缺少转码组件）"
 
+        # 诊断日志：打印音频大小和时长，排查"识别结果一直一样"的问题
+        try:
+            import os as _os
+            audio_size = _os.path.getsize(audio_path)
+            wav_size = _os.path.getsize(wav_path)
+            dur = _wav_duration(wav_path)
+            print("[ASR] 诊断：原始音频 %d bytes, WAV %d bytes, 时长 %.1f秒" % (audio_size, wav_size, dur or 0))
+        except Exception as e:
+            print("[ASR] 诊断日志失败：", e)
+
         try:
             # ---- 优先1：Groq Whisper（快+准）----
             if GROQ_API_KEY:
