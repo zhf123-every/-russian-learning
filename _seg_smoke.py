@@ -18,6 +18,9 @@ def _post(url, body, token=None, admin_key=None):
     headers = {'Content-Type': 'application/json'}
     if token:
         headers['Authorization'] = 'Bearer ' + token
+    if admin_key:
+        body['adminKey'] = admin_key
+        data = json.dumps(body, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode('utf-8'))
