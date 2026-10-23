@@ -1469,6 +1469,76 @@ def _asr_task_worker(task_id, url):
         _asr_set_task(task_id, {"status": "error", "error": "转写异常：" + str(e)[:200]})
 
 
+# ---- 视频转码任务（HEVC/H.265 等浏览器不支持的编码 → H.264，后台异步）----
+_TRANSCODE_TASKS = {}
+_TRANSCODE_TASKS_LOCK = threading.Lock()
+
+
+def _transcode_set_task(task_id, obj):
+    with _TRANSCODE_TASKS_LOCK:
+        _TRANSCODE_TASKS[task_id] = obj
+
+
+def _transcode_task_worker(task_id, url, vid_id):
+    """后台线程：下载视频 → ffmpeg 转 H.264/AAC → 传回 B2 → 更新名单 videoUrl。"""
+    try:
+        src = url
+        if src.startswith(_B2_PREFIX):
+            src = _b2_resolve(src)
+            if not src:
+                _transcode_set_task(task_id, {"status": "error", "error": "视频解析失败，请确认视频已上传到云端"})
+                return
+        tmpdir = tempfile.mkdtemp(prefix="tc_")
+        try:
+            in_path = os.path.join(tmpdir, "in.mp4")
+            out_path = os.path.join(tmpdir, "out.mp4")
+            urllib.request.urlretrieve(src, in_path)
+            cmd = [
+                "ffmpeg", "-y", "-i", in_path,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart", out_path,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, timeout=1500)
+            if proc.returncode != 0:
+                err = proc.stderr.decode("utf-8", "replace")[-300:]
+                _transcode_set_task(task_id, {"status": "error", "error": "转码失败：" + err})
+                return
+            client = _get_b2()
+            if not client:
+                _transcode_set_task(task_id, {"status": "error", "error": "B2 未配置"})
+                return
+            new_key = "videos/" + uuid.uuid4().hex + ".mp4"
+            with open(out_path, "rb") as f:
+                client.put_object(Bucket=_B2_BUCKET, Key=new_key, Body=f, ContentType="video/mp4")
+            new_url = _B2_PREFIX + new_key
+            # 更新名单：该 id 的 videoUrl 指向转码产物
+            try:
+                obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
+                raw = obj["Body"].read().decode("utf-8")
+                lst = json.loads(raw)
+                if isinstance(lst, list):
+                    changed = False
+                    for v in lst:
+                        if isinstance(v, dict) and v.get("id") == vid_id:
+                            v["videoUrl"] = new_url
+                            changed = True
+                            break
+                    if changed:
+                        client.put_object(
+                            Bucket=_B2_BUCKET, Key="videos/index.json",
+                            Body=io.BytesIO(json.dumps(lst, ensure_ascii=False).encode("utf-8")),
+                            ContentType="application/json",
+                        )
+            except Exception:
+                pass  # 名单更新失败不致命：转码产物已上传，用户可重新投稿引用
+            _transcode_set_task(task_id, {"status": "done", "url": new_url})
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception as e:
+        _transcode_set_task(task_id, {"status": "error", "error": "转码异常：" + str(e)[:200]})
+
+
 def log_api_call(call_type, messages, response=""):
     """记录 API 调用到日志文件"""
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -3433,6 +3503,32 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "status": task.get("status"),
             "segments": task.get("segments") or [],
+            "error": task.get("error") or "",
+        })
+
+    def _handle_transcode_async(self, data):
+        """异步转码：HEVC/H.265 等浏览器不支持的视频 → H.264，后台线程执行。"""
+        url = (data.get("url") or "").strip()
+        vid_id = (data.get("id") or "").strip()
+        if not url:
+            return self._json(400, {"ok": False, "error": "缺少视频链接"})
+        task_id = "tc_" + uuid.uuid4().hex[:12]
+        _transcode_set_task(task_id, {"status": "running", "created": time.time()})
+        threading.Thread(target=_transcode_task_worker, args=(task_id, url, vid_id), daemon=True).start()
+        return self._json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_transcode_async_status(self, data):
+        task_id = (data.get("task_id") or "").strip()
+        if not task_id:
+            return self._json(400, {"ok": False, "error": "缺少 task_id"})
+        with _TRANSCODE_TASKS_LOCK:
+            task = _TRANSCODE_TASKS.get(task_id)
+        if not task:
+            return self._json(200, {"ok": True, "status": "notfound"})
+        return self._json(200, {
+            "ok": True,
+            "status": task.get("status"),
+            "url": task.get("url") or "",
             "error": task.get("error") or "",
         })
 
@@ -8243,6 +8339,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_transcribe_async(data)
             if path == "/api/transcribe-async/status":
                 return self._handle_transcribe_async_status(data)
+            if path == "/api/transcode-async":
+                return self._handle_transcode_async(data)
+            if path == "/api/transcode-async/status":
+                return self._handle_transcode_async_status(data)
             if path == "/api/auth/register":
                 return self._handle_auth_register(data)
             if path == "/api/auth/login":
