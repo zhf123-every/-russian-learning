@@ -6692,6 +6692,26 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(1.5 * (attempt + 1))
         return self._json(500, {"ok": False, "error": "名单同步失败：" + last_err})
 
+    def _handle_videos_thumb(self, params):
+        """b2:// 图片代理端点：把 b2://key 302 重定向到预签名可播直链。
+        前端 img/poster 一律用 /api/videos/thumb?u=... ，避免浏览器不认识 b2:// 协议。"""
+        u = (params.get("u") or [""])[0]
+        if not u:
+            return self._json(400, {"ok": False, "error": "缺少 u"})
+        if u.startswith(_B2_PREFIX):
+            resolved = _b2_resolve(u)
+            if resolved:
+                try:
+                    self.send_response(302)
+                    self.send_header("Location", resolved)
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self._cors()
+                    self.end_headers()
+                    return
+                except Exception:
+                    pass
+        return self._json(404, {"ok": False, "error": "图片不存在"})
+
     def _handle_videos_list(self):
         """读取 B2 上的投稿名单（无需密钥，所有访客可读）。"""
         if not _b2_configured():
@@ -6902,6 +6922,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_square_list()
         if path == "/api/videos/list":
             return self._handle_videos_list()
+        if path == "/api/videos/thumb":
+            return self._handle_videos_thumb(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
         if path == "/api/segments":
             query = urllib.parse.urlparse(self.path).query
             return self._handle_segments_read(urllib.parse.parse_qs(query))
