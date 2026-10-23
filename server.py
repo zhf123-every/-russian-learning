@@ -920,6 +920,111 @@ def _words_to_segments(words, gap=0.6):
     return segs
 
 
+# ---- LLM 语义断句增强：让字幕按"人物说的一句话"切分，而不是等静音 ----
+_RU_ALPHABET = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+
+
+def _norm_ru(s):
+    """俄语词归一化：小写、保留西里尔字母（ё→е），用于词序对齐比较。"""
+    out = []
+    for ch in (s or "").lower():
+        if ch == "ё":
+            out.append("е")
+        elif ch in _RU_ALPHABET:
+            out.append(ch)
+    return "".join(out)
+
+
+def _llm_split_sentences(text):
+    """用 LLM 把一段俄语口语转写文本按语义断句：每行一句、句末加标点、不改词。
+    成功返回句子列表，失败返回 None（调用方回退基础分段）。"""
+    if not (AI_API_KEY and AI_BASE_URL):
+        return None
+    try:
+        content = ai_chat(AI_BASE_URL, AI_API_KEY, AI_MODEL, [
+            {"role": "system", "content": (
+                "你是俄语语音转写文本的断句助手。任务：把一段没有标点、可能多句话连在一起的"
+                "俄语口语转写文本，按语义和口语习惯断成单独的句子。"
+                "要求：每行输出一句完整的话，句末加标点（. ! ?）。"
+                "严禁修改、增删、合并或拆分任何词语，只能加标点和分行。"
+                "只输出断好句的文本本身，不要任何解释、编号或引号。")},
+            {"role": "user", "content": text},
+        ])
+    except Exception:
+        return None
+    if not content or not content.strip():
+        return None
+    lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+    return lines or None
+
+
+def _align_sentences_to_words(words, sentences):
+    """把 LLM 断出的句子与 Vosk 词级时间戳按顺序贪心对齐（两者同序）。
+    成功返回句级 [{start,end,text}]，任一句子对不上则返回 None（整体回退）。"""
+    tokens = []
+    for wi, w in enumerate(words):
+        t = (w.get("word") or "").strip()
+        if t:
+            tokens.append((wi, _norm_ru(t)))
+    if not tokens:
+        return None
+    segs = []
+    ti = 0
+    for sent in sentences:
+        norm_sent = _norm_ru(sent)
+        if not norm_sent:
+            continue
+        acc = ""
+        start_wi = None
+        end_wi = None
+        j = ti
+        matched = False
+        while j < len(tokens):
+            acc += tokens[j][1]
+            if start_wi is None:
+                start_wi = tokens[j][0]
+            end_wi = tokens[j][0]
+            j += 1
+            if acc == norm_sent:
+                matched = True
+                break
+            if len(acc) > max(len(norm_sent) * 2 + 10, 40):
+                break
+        if not matched:
+            return None
+        segs.append({
+            "start": float(words[start_wi].get("start") or 0.0),
+            "end": float(words[end_wi].get("end") or 0.0),
+            "text": " ".join((words[k].get("word") or "").strip()
+                             for k in range(start_wi, end_wi + 1)),
+        })
+        ti = j
+    return segs or None
+
+
+def _llm_sentence_segments(words):
+    """LLM 断句 + 词时间戳对齐 → 句级字幕。分块处理长文本；任一块对齐失败
+    回退到基础间隙分段，整体绝不失败。返回 segments 或 None。"""
+    try:
+        CHUNK = 300
+        segs_all = []
+        for i in range(0, len(words), CHUNK):
+            chunk = words[i:i + CHUNK]
+            text = " ".join((w.get("word") or "").strip()
+                            for w in chunk if (w.get("word") or "").strip())
+            if not text:
+                continue
+            sents = _llm_split_sentences(text)
+            aligned = _align_sentences_to_words(chunk, sents) if sents else None
+            if aligned:
+                segs_all.extend(aligned)
+            else:
+                segs_all.extend(_words_to_segments(chunk))
+        return segs_all or None
+    except Exception:
+        return None
+
+
 def _wav_duration(path):
     """读取 WAV 时长（秒）。"""
     import wave
@@ -1306,6 +1411,10 @@ def transcribe_file(path, model_name="small"):
     words = final.get("result") or []
     if not words:
         return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
+    # LLM 语义断句增强：按"一句话"切分字幕（不再等静音把几句连成一块）
+    llm_segs = _llm_sentence_segments(words)
+    if llm_segs:
+        return llm_segs, None
     segs = _words_to_segments(words)
     if not segs:
         return [], "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"
