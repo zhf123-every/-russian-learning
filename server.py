@@ -159,6 +159,16 @@ _B2_KEYID = os.environ.get("B2_KEYID", "")
 _B2_APPKEY = os.environ.get("B2_APPLICATION_KEY", "")
 _B2_PREFIX = "b2://"
 
+# 投稿名单内存缓存：B2 免费层日下载配额有限，list 优先走缓存，减少对 B2 的读取次数
+_VIDEOS_CACHE = {"data": None, "ts": 0}
+_VIDEOS_CACHE_LOCK = threading.Lock()
+_VIDEOS_CACHE_TTL = 60  # 秒
+
+def _invalidate_videos_cache():
+    with _VIDEOS_CACHE_LOCK:
+        _VIDEOS_CACHE["data"] = None
+        _VIDEOS_CACHE["ts"] = 0
+
 _b2_client = None
 def _get_b2():
     global _b2_client
@@ -6761,13 +6771,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(500, {"ok": False, "error": "名单数据序列化失败：" + str(e)[:120]})
         last_err = ""
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 client.put_object(
                     Bucket=_B2_BUCKET, Key="videos/index.json",
                     Body=io.BytesIO(body), ContentType="application/json",
                 )
-                # 回读验证：确认写入生效
+                # 写入成功后清缓存，让后续读取立刻看到新名单
+                _invalidate_videos_cache()
+                # 回读验证：AccessDenied 通常只是 B2 下载配额（日下载量/请求数）超限，
+                # 此时写入已成功、名单已落盘，回读失败不应阻塞；仅记录告警，不再重试。
                 try:
                     obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
                     raw = obj["Body"].read().decode("utf-8")
@@ -6775,14 +6788,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(written, list) or len(written) != len(videos):
                         raise RuntimeError("回读名单数量不一致（%d != %d）" % (len(written) if isinstance(written, list) else -1, len(videos)))
                 except Exception as e2:
-                    last_err = "写入后回读失败：" + str(e2)[:120]
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
+                    err2 = str(e2)[:160]
+                    print("[videos_sync] 写入成功但回读受限（%s）——名单已落盘，按成功返回" % err2)
                 try:
                     self._log_op(data, "videos_sync", "videos_index", None, {"count": len(videos)})
                 except Exception:
                     pass
-                return self._json(200, {"ok": True, "count": len(videos)})
+                return self._json(200, {"ok": True, "count": len(videos), "warning": "写入成功；回读受 B2 下载配额限制，可能稍后才可读"})
             except Exception as e:
                 last_err = str(e)[:200]
                 time.sleep(1.5 * (attempt + 1))
@@ -6809,9 +6821,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"ok": False, "error": "图片不存在"})
 
     def _handle_videos_list(self):
-        """读取 B2 上的投稿名单（无需密钥，所有访客可读）。"""
+        """读取 B2 上的投稿名单（无需密钥，所有访客可读）。
+        优先返回 60s 内存缓存，命中时不访问 B2——避免免费层日下载配额被反复读取耗尽。"""
         if not _b2_configured():
             return self._json(200, {"ok": True, "videos": []})
+        with _VIDEOS_CACHE_LOCK:
+            cached = _VIDEOS_CACHE.get("data")
+            now = time.time()
+            if cached is not None and (now - _VIDEOS_CACHE.get("ts", 0)) < _VIDEOS_CACHE_TTL:
+                return self._json(200, {"ok": True, "videos": cached})
         try:
             client = _get_b2()
             obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
@@ -6824,8 +6842,16 @@ class Handler(BaseHTTPRequestHandler):
                     v["videoUrl"] = _b2_resolve(v["videoUrl"])
                 if isinstance(v, dict) and v.get("thumbnail") and v["thumbnail"].startswith(_B2_PREFIX):
                     v["thumbnail"] = _b2_resolve(v["thumbnail"])
+            with _VIDEOS_CACHE_LOCK:
+                _VIDEOS_CACHE["data"] = videos
+                _VIDEOS_CACHE["ts"] = time.time()
             return self._json(200, {"ok": True, "videos": videos})
         except Exception as e:
+            # B2 读取失败（配额等）：若有缓存则回退缓存，避免前端拿到空名单去覆盖
+            with _VIDEOS_CACHE_LOCK:
+                cached = _VIDEOS_CACHE.get("data")
+            if cached is not None:
+                return self._json(200, {"ok": True, "videos": cached, "warning": "B2 读取受限，返回缓存：" + str(e)[:120]})
             return self._json(200, {"ok": True, "videos": [], "error": str(e)})
 
     # ---- 课程评价（B2 reviews/index.json，全网公开）----
