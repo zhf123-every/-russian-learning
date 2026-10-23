@@ -6648,7 +6648,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"ok": False, "error": "生成上传授权失败：" + str(e)})
 
     def _handle_videos_sync(self, data):
-        """投稿名单写入 B2（videos/index.json）。所有访客通过 GET /api/videos/list 读到。"""
+        """投稿名单写入 B2（videos/index.json）。所有访客通过 GET /api/videos/list 读到。
+        加重试 + 回读验证：put 成功后立即读回确认新名单真实落盘，避免瞬时网络抖动导致
+        「本地成功、云端没同步」的不一致。"""
         err = self._check_admin(data)
         if err:
             return err
@@ -6657,17 +6659,38 @@ class Handler(BaseHTTPRequestHandler):
         videos = data.get("videos")
         if not isinstance(videos, list):
             return self._json(400, {"ok": False, "error": "videos 必须是数组"})
+        client = _get_b2()
         try:
-            client = _get_b2()
             body = json.dumps(videos, ensure_ascii=False).encode("utf-8")
-            client.put_object(
-                Bucket=_B2_BUCKET, Key="videos/index.json",
-                Body=io.BytesIO(body), ContentType="application/json",
-            )
-            self._log_op(data, "videos_sync", "videos_index", None, {"count": len(videos)})
-            return self._json(200, {"ok": True, "count": len(videos)})
         except Exception as e:
-            return self._json(500, {"ok": False, "error": "名单同步失败：" + str(e)})
+            return self._json(500, {"ok": False, "error": "名单数据序列化失败：" + str(e)[:120]})
+        last_err = ""
+        for attempt in range(3):
+            try:
+                client.put_object(
+                    Bucket=_B2_BUCKET, Key="videos/index.json",
+                    Body=io.BytesIO(body), ContentType="application/json",
+                )
+                # 回读验证：确认写入生效
+                try:
+                    obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
+                    raw = obj["Body"].read().decode("utf-8")
+                    written = json.loads(raw)
+                    if not isinstance(written, list) or len(written) != len(videos):
+                        raise RuntimeError("回读名单数量不一致（%d != %d）" % (len(written) if isinstance(written, list) else -1, len(videos)))
+                except Exception as e2:
+                    last_err = "写入后回读失败：" + str(e2)[:120]
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                try:
+                    self._log_op(data, "videos_sync", "videos_index", None, {"count": len(videos)})
+                except Exception:
+                    pass
+                return self._json(200, {"ok": True, "count": len(videos)})
+            except Exception as e:
+                last_err = str(e)[:200]
+                time.sleep(1.5 * (attempt + 1))
+        return self._json(500, {"ok": False, "error": "名单同步失败：" + last_err})
 
     def _handle_videos_list(self):
         """读取 B2 上的投稿名单（无需密钥，所有访客可读）。"""
