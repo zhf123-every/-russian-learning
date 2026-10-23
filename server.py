@@ -1312,6 +1312,54 @@ def transcribe_file(path, model_name="small"):
     return segs, None
 
 
+# ---- 异步字幕转写任务（长视频：避免 Render 免费实例 60s 无响应断连）----
+_ASR_TASKS = {}
+_ASR_TASKS_LOCK = threading.Lock()
+
+
+def _asr_set_task(task_id, obj):
+    with _ASR_TASKS_LOCK:
+        _ASR_TASKS[task_id] = obj
+
+
+def _asr_task_worker(task_id, url):
+    """后台线程：下载视频音频 → 16kHz WAV → Vosk 分段转写。结果写入任务表。"""
+    try:
+        src = url
+        if src.startswith(_B2_PREFIX):
+            src = _b2_resolve(src)
+            if not src:
+                _asr_set_task(task_id, {"status": "error", "error": "B2 视频解析失败，请确认已上传到云端"})
+                return
+        audio_path, err = download_audio(src)
+        if err:
+            _asr_set_task(task_id, {"status": "error", "error": err})
+            return
+        try:
+            wav_path = _to_wav16k(audio_path)
+            if not wav_path:
+                _asr_set_task(task_id, {"status": "error", "error": "音频转码失败（缺少转码组件）"})
+                return
+            try:
+                segs, terr = transcribe_file(wav_path)
+                if terr:
+                    _asr_set_task(task_id, {"status": "error", "error": terr})
+                    return
+                if not segs:
+                    _asr_set_task(task_id, {"status": "error", "error": "未识别到俄语语音（可能没有音频轨，或内容不是俄语）"})
+                    return
+                _asr_set_task(task_id, {"status": "done", "segments": segs})
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
+        finally:
+            shutil.rmtree(os.path.dirname(audio_path), ignore_errors=True)
+    except Exception as e:
+        _asr_set_task(task_id, {"status": "error", "error": "转写异常：" + str(e)[:200]})
+
+
 def log_api_call(call_type, messages, response=""):
     """记录 API 调用到日志文件"""
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -3254,6 +3302,30 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         finally:
             shutil.rmtree(os.path.dirname(audio_path), ignore_errors=True)
+
+    def _handle_transcribe_async(self, data):
+        url = (data.get("url") or "").strip()
+        if not url:
+            return self._json(400, {"ok": False, "error": "缺少视频链接"})
+        task_id = "asr_" + uuid.uuid4().hex[:12]
+        _asr_set_task(task_id, {"status": "running", "created": time.time()})
+        threading.Thread(target=_asr_task_worker, args=(task_id, url), daemon=True).start()
+        return self._json(200, {"ok": True, "task_id": task_id})
+
+    def _handle_transcribe_async_status(self, data):
+        task_id = (data.get("task_id") or "").strip()
+        if not task_id:
+            return self._json(400, {"ok": False, "error": "缺少 task_id"})
+        with _ASR_TASKS_LOCK:
+            task = _ASR_TASKS.get(task_id)
+        if not task:
+            return self._json(200, {"ok": True, "status": "notfound"})
+        return self._json(200, {
+            "ok": True,
+            "status": task.get("status"),
+            "segments": task.get("segments") or [],
+            "error": task.get("error") or "",
+        })
 
     def _handle_stream(self):
         """视频播放代理：优先直接转发渐进式直链（可拖动）；否则用 ffmpeg 重封装成 mp4 流。"""
@@ -8013,6 +8085,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/transcribe":
                 return self._handle_transcribe(data)
+            if path == "/api/transcribe-async":
+                return self._handle_transcribe_async(data)
+            if path == "/api/transcribe-async/status":
+                return self._handle_transcribe_async_status(data)
             if path == "/api/auth/register":
                 return self._handle_auth_register(data)
             if path == "/api/auth/login":
