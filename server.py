@@ -94,6 +94,10 @@ USE_NEW_ENGINE = False  # 阶段B任务1验证完成后再切 True
 # ---- P0 登录与 RBAC ----
 # JWT 签名密钥（务必单独设置一个随机长串，不要与 ADMIN_KEY 相同）
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
+# 兜底：未配置 SECRET_KEY 时从 ADMIN_KEY 稳定派生（避免 Render 上漏配时 token 无法校验，
+# 导致"已登录但管理操作全部 403"。派生 key 随 ADMIN_KEY 固定，重启不失效）
+if not SECRET_KEY and ADMIN_KEY:
+    SECRET_KEY = hashlib.sha256(("russian-learning-jwt:" + ADMIN_KEY).encode("utf-8")).hexdigest()
 # 令牌有效期（秒），默认 7 天
 TOKEN_TTL = int(os.environ.get("TOKEN_TTL", "604800"))
 
