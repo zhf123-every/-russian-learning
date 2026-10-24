@@ -6777,8 +6777,11 @@ class Handler(BaseHTTPRequestHandler):
                     Bucket=_B2_BUCKET, Key="videos/index.json",
                     Body=io.BytesIO(body), ContentType="application/json",
                 )
-                # 写入成功后清缓存，让后续读取立刻看到新名单
-                _invalidate_videos_cache()
+                # 写入成功后：把本次名单（原始 b2:// 形式）留在后端内存缓存。
+                # B2 免费层 Class B 下载配额超限时，读取仍可从缓存返回，保证课程/视频不被中断。
+                with _VIDEOS_CACHE_LOCK:
+                    _VIDEOS_CACHE["data"] = videos
+                    _VIDEOS_CACHE["ts"] = time.time()
                 # 回读验证：AccessDenied 通常只是 B2 下载配额（日下载量/请求数）超限，
                 # 此时写入已成功、名单已落盘，回读失败不应阻塞；仅记录告警，不再重试。
                 try:
@@ -6789,12 +6792,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise RuntimeError("回读名单数量不一致（%d != %d）" % (len(written) if isinstance(written, list) else -1, len(videos)))
                 except Exception as e2:
                     err2 = str(e2)[:160]
-                    print("[videos_sync] 写入成功但回读受限（%s）——名单已落盘，按成功返回" % err2)
+                    print("[videos_sync] 写入成功但回读受限（%s）——名单已落盘并在内存缓存可用" % err2)
                 try:
                     self._log_op(data, "videos_sync", "videos_index", None, {"count": len(videos)})
                 except Exception:
                     pass
-                return self._json(200, {"ok": True, "count": len(videos), "warning": "写入成功；回读受 B2 下载配额限制，可能稍后才可读"})
+                return self._json(200, {"ok": True, "count": len(videos), "warning": "写入成功；回读受 B2 下载配额限制，读取已切到后端内存缓存"})
             except Exception as e:
                 last_err = str(e)[:200]
                 time.sleep(1.5 * (attempt + 1))
@@ -6820,16 +6823,34 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         return self._json(404, {"ok": False, "error": "图片不存在"})
 
+    @staticmethod
+    def _resolve_videos(videos):
+        """把名单里的 b2:// 地址解析为预签名直链（缓存与 B2 读取共用同一套处理）。"""
+        out = []
+        for v in videos:
+            if not isinstance(v, dict):
+                continue
+            item = dict(v)
+            if item.get("videoUrl"):
+                item["videoUrl"] = _b2_resolve(item["videoUrl"])
+            if item.get("thumbnail") and item["thumbnail"].startswith(_B2_PREFIX):
+                item["thumbnail"] = _b2_resolve(item["thumbnail"])
+            if item.get("posterUrl") and item["posterUrl"].startswith(_B2_PREFIX):
+                item["posterUrl"] = _b2_resolve(item["posterUrl"])
+            out.append(item)
+        return out
+
     def _handle_videos_list(self):
         """读取 B2 上的投稿名单（无需密钥，所有访客可读）。
-        优先返回 60s 内存缓存，命中时不访问 B2——避免免费层日下载配额被反复读取耗尽。"""
+        优先返回 60s 内存缓存，命中时不访问 B2——避免免费层日下载配额被反复读取耗尽。
+        B2 读取失败（配额超限）时回退内存缓存，保证课程/视频不被中断。"""
         if not _b2_configured():
             return self._json(200, {"ok": True, "videos": []})
         with _VIDEOS_CACHE_LOCK:
             cached = _VIDEOS_CACHE.get("data")
             now = time.time()
             if cached is not None and (now - _VIDEOS_CACHE.get("ts", 0)) < _VIDEOS_CACHE_TTL:
-                return self._json(200, {"ok": True, "videos": cached})
+                return self._json(200, {"ok": True, "videos": self._resolve_videos(cached)})
         try:
             client = _get_b2()
             obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
@@ -6837,11 +6858,7 @@ class Handler(BaseHTTPRequestHandler):
             videos = json.loads(raw)
             if not isinstance(videos, list):
                 videos = []
-            for v in videos:
-                if isinstance(v, dict) and v.get("videoUrl"):
-                    v["videoUrl"] = _b2_resolve(v["videoUrl"])
-                if isinstance(v, dict) and v.get("thumbnail") and v["thumbnail"].startswith(_B2_PREFIX):
-                    v["thumbnail"] = _b2_resolve(v["thumbnail"])
+            videos = self._resolve_videos(videos)
             with _VIDEOS_CACHE_LOCK:
                 _VIDEOS_CACHE["data"] = videos
                 _VIDEOS_CACHE["ts"] = time.time()
@@ -6851,7 +6868,7 @@ class Handler(BaseHTTPRequestHandler):
             with _VIDEOS_CACHE_LOCK:
                 cached = _VIDEOS_CACHE.get("data")
             if cached is not None:
-                return self._json(200, {"ok": True, "videos": cached, "warning": "B2 读取受限，返回缓存：" + str(e)[:120]})
+                return self._json(200, {"ok": True, "videos": self._resolve_videos(cached), "warning": "B2 读取受限，返回缓存：" + str(e)[:120]})
             return self._json(200, {"ok": True, "videos": [], "error": str(e)})
 
     # ---- 课程评价（B2 reviews/index.json，全网公开）----
