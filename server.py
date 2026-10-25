@@ -162,7 +162,7 @@ _B2_PREFIX = "b2://"
 # 投稿名单内存缓存：B2 免费层日下载配额有限，list 优先走缓存，减少对 B2 的读取次数
 _VIDEOS_CACHE = {"data": None, "ts": 0}
 _VIDEOS_CACHE_LOCK = threading.Lock()
-_VIDEOS_CACHE_TTL = 60  # 秒
+_VIDEOS_CACHE_TTL = 300  # 秒：名单含课程全量内容，5 分钟缓存把每天 B2 读取降到约 288 次
 
 def _invalidate_videos_cache():
     with _VIDEOS_CACHE_LOCK:
@@ -6840,17 +6840,37 @@ class Handler(BaseHTTPRequestHandler):
             out.append(item)
         return out
 
+    def _send_json_gzip(self, obj):
+        """gzip 压缩后返回 JSON：名单含课程全量内容（约 2.5MB），压缩后传输量可降约 8 倍，
+        显著降低 B2 免费层日下载配额的消耗。"""
+        try:
+            import gzip as _gzip
+            payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            gz = _gzip.compress(payload, 6)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(gz)))
+            self._cors()
+            self.end_headers()
+            try:
+                self.wfile.write(gz)
+            except Exception:
+                pass
+        except Exception:
+            return self._json(200, obj)
+
     def _handle_videos_list(self):
         """读取 B2 上的投稿名单（无需密钥，所有访客可读）。
-        优先返回 60s 内存缓存，命中时不访问 B2——避免免费层日下载配额被反复读取耗尽。
-        B2 读取失败（配额超限）时回退内存缓存，保证课程/视频不被中断。"""
+        优先返回 5 分钟内存缓存，命中时不访问 B2——避免免费层日下载配额被反复读取耗尽。
+        响应 gzip 压缩（名单含课程全量内容）；B2 读取失败（配额超限）时回退内存缓存，保证课程/视频不被中断。"""
         if not _b2_configured():
-            return self._json(200, {"ok": True, "videos": []})
+            return self._send_json_gzip({"ok": True, "videos": []})
         with _VIDEOS_CACHE_LOCK:
             cached = _VIDEOS_CACHE.get("data")
             now = time.time()
             if cached is not None and (now - _VIDEOS_CACHE.get("ts", 0)) < _VIDEOS_CACHE_TTL:
-                return self._json(200, {"ok": True, "videos": self._resolve_videos(cached)})
+                return self._send_json_gzip({"ok": True, "videos": self._resolve_videos(cached)})
         try:
             client = _get_b2()
             obj = client.get_object(Bucket=_B2_BUCKET, Key="videos/index.json")
@@ -6862,14 +6882,14 @@ class Handler(BaseHTTPRequestHandler):
             with _VIDEOS_CACHE_LOCK:
                 _VIDEOS_CACHE["data"] = videos
                 _VIDEOS_CACHE["ts"] = time.time()
-            return self._json(200, {"ok": True, "videos": videos})
+            return self._send_json_gzip({"ok": True, "videos": videos})
         except Exception as e:
             # B2 读取失败（配额等）：若有缓存则回退缓存，避免前端拿到空名单去覆盖
             with _VIDEOS_CACHE_LOCK:
                 cached = _VIDEOS_CACHE.get("data")
             if cached is not None:
-                return self._json(200, {"ok": True, "videos": self._resolve_videos(cached), "warning": "B2 读取受限，返回缓存：" + str(e)[:120]})
-            return self._json(200, {"ok": True, "videos": [], "error": str(e)})
+                return self._send_json_gzip({"ok": True, "videos": self._resolve_videos(cached), "warning": "B2 读取受限，返回缓存：" + str(e)[:120]})
+            return self._send_json_gzip({"ok": True, "videos": [], "error": str(e)})
 
     # ---- 课程评价（B2 reviews/index.json，全网公开）----
     _REVIEW_LOCK = threading.Lock()
