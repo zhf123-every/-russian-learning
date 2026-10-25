@@ -1509,8 +1509,9 @@ def _transcode_task_worker(task_id, url, vid_id):
                 shutil.copyfileobj(resp, f)
             cmd = [
                 "ffmpeg", "-y", "-i", in_path,
+                "-threads", "1",  # 免费实例内存小，限制线程数防 OOM（实测 AV1→H264 多线程曾把 512MB 实例拖崩重启）
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-                "-vf", "scale=min(1920\\,iw):-2",  # 上限 1080p，体积大幅减小（实测 73MB HEVC → 约 20MB）
+                "-vf", "scale=min(1280\\,iw):-2",  # 上限 720p：教学视频够清晰，体积/内存/CPU 需求大幅降低（避免免费实例 OOM）
                 "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart", out_path,
             ]
