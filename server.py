@@ -162,7 +162,8 @@ _B2_PREFIX = "b2://"
 # 投稿名单内存缓存：B2 免费层日下载配额有限，list 优先走缓存，减少对 B2 的读取次数
 _VIDEOS_CACHE = {"data": None, "ts": 0}
 _VIDEOS_CACHE_LOCK = threading.Lock()
-_VIDEOS_CACHE_TTL = 300  # 秒：名单含课程全量内容，5 分钟缓存把每天 B2 读取降到约 288 次
+_VIDEOS_CACHE_TTL = 3600  # 秒：名单含课程全量内容。B2→Render 免费实例网络链路慢（实测 2.5MB 下载 16~34s），
+# 1 小时缓存把每天 B2 被动读取降到约 24 次，避免每次都慢；投稿 sync 成功会立即刷新缓存，不影响实时性。
 
 def _invalidate_videos_cache():
     with _VIDEOS_CACHE_LOCK:
@@ -1502,11 +1503,15 @@ def _transcode_task_worker(task_id, url, vid_id):
         try:
             in_path = os.path.join(tmpdir, "in.mp4")
             out_path = os.path.join(tmpdir, "out.mp4")
-            urllib.request.urlretrieve(src, in_path)
+            # 下载带超时（预签名 URL 有效期有限，且防 B2 链路慢时线程永久挂起）
+            req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=180) as resp, open(in_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
             cmd = [
                 "ffmpeg", "-y", "-i", in_path,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-vf", "scale=min(1920\\,iw):-2",  # 上限 1080p，体积大幅减小（实测 73MB HEVC → 约 20MB）
+                "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart", out_path,
             ]
             proc = subprocess.run(cmd, capture_output=True, timeout=1500)
@@ -3517,11 +3522,17 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _handle_transcode_async(self, data):
-        """异步转码：HEVC/H.265 等浏览器不支持的视频 → H.264，后台线程执行。"""
+        """异步转码：HEVC/H.265 等浏览器不支持的视频 → H.264，后台线程执行。
+        并发限制：同时最多 1 个转码任务——Render 免费实例内存小，多个 ffmpeg 并行会拖垮后端（此前曾导致
+        所有接口响应 30s+、前端 Failed to fetch、名单同步超时）。"""
         url = (data.get("url") or "").strip()
         vid_id = (data.get("id") or "").strip()
         if not url:
             return self._json(400, {"ok": False, "error": "缺少视频链接"})
+        with _TRANSCODE_TASKS_LOCK:
+            running = sum(1 for t in _TRANSCODE_TASKS.values() if t.get("status") == "running")
+        if running >= 1:
+            return self._json(429, {"ok": False, "error": "已有转码任务进行中，请稍后再试（转码期间仅限 1 个任务）"})
         task_id = "tc_" + uuid.uuid4().hex[:12]
         _transcode_set_task(task_id, {"status": "running", "created": time.time()})
         threading.Thread(target=_transcode_task_worker, args=(task_id, url, vid_id), daemon=True).start()
